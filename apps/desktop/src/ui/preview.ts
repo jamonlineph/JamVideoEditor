@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { compositionDuration, evaluateScene, renderContextFor, renderSizeFor, sceneMediaLayers, type Project, type Scene } from "@openedits/core";
 import { Compositor } from "@openedits/renderer";
 import { MediaManager } from "@openedits/render-host/media";
-import { live } from "./live.js";
+import { fileUrl, live } from "./live.js";
 import { ui } from "./uiStore.js";
 
 const FFMPEG = process.env.OPENEDITS_FFMPEG ?? ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].find((p) => fs.existsSync(p)) ?? "ffmpeg";
@@ -84,7 +84,7 @@ export class Player {
     this.mixVersion = r.version;
     if (r.path !== this.mixPath) {
       this.mixPath = r.path;
-      this.audio.src = `file://${r.path}`;
+      this.audio.src = fileUrl(r.path);
       await new Promise<void>((resolve) => {
         const done = () => resolve();
         this.audio.addEventListener("canplay", done, { once: true });

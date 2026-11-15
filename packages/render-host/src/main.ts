@@ -6,6 +6,9 @@ import path from "node:path";
  * and exchanges JSON messages with a hidden window that runs the WebGL2 compositor.
  */
 if (process.platform === "darwin") app.setActivationPolicy("accessory");
+// Machines without a supported GPU (VMs, remote desktops, old drivers) still get WebGL2, in software.
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+app.commandLine.appendSwitch("enable-unsafe-swiftshader");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=4096");

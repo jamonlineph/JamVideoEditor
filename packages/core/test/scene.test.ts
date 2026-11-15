@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILTIN_LUT_IDS,
+  LUTS_CATALOG,
+  builtinLut,
   addAdjustmentLayer,
   addMediaToTimeline,
   addText,
@@ -163,5 +166,42 @@ describe("audio plan", () => {
     });
     plan = buildAudioPlan(s.state);
     expect(plan.map((c) => c.role).sort()).toEqual(["extracted", "music"]);
+  });
+});
+
+describe("built-in camera LUTs", () => {
+  // Each vendor's 18% grey as a decoded (video-range) pixel value; a good Rec.709 conversion shows it near 0.43.
+  const videoRange = (fullCode: number) => (fullCode * 1023 - 64) / 876;
+  const MID_GREY: Record<string, number> = {
+    apple_log_to_rec709: 0.488,
+    sony_slog2_sgamut3_to_rec709: 0.308,
+    sony_slog3_sgamut3_to_rec709: videoRange(420 / 1023),
+    canon_clog_to_rec709: 0.328,
+    canon_clog3_to_rec709: 0.328,
+    dji_dlog_to_rec709: 0.3988,
+    fuji_flog_to_rec709: videoRange(470 / 1023),
+    fuji_flog2_to_rec709: videoRange(400 / 1023),
+    panasonic_vlog_to_rec709: videoRange(433 / 1023),
+  };
+
+  it("generates every catalog camera LUT with black at 0, grey near 0.43 and a monotone curve", () => {
+    const catalog = LUTS_CATALOG.map((l) => l.id).filter((id) => id !== "custom");
+    expect(BUILTIN_LUT_IDS.sort()).toEqual([...catalog].sort());
+    for (const id of catalog) {
+      const lut = builtinLut(id, 33)!;
+      expect(lut.data.length).toBe(33 ** 3 * 3);
+      const grey = (v: number) => {
+        const i = Math.round(v * 32);
+        return lut.data[((i * 33 + i) * 33 + i) * 3];
+      };
+      expect(grey(0), id).toBeLessThan(0.02);
+      for (let i = 1; i <= 32; i++) expect(grey(i / 32), `${id} at ${i}`).toBeGreaterThanOrEqual(grey((i - 1) / 32) - 1e-6);
+      expect(grey(1), `${id} white`).toBeGreaterThan(0.9);
+      if (MID_GREY[id]) {
+        expect(grey(MID_GREY[id]), id).toBeGreaterThan(0.38);
+        expect(grey(MID_GREY[id]), id).toBeLessThan(0.5);
+      }
+    }
+    expect(builtinLut("nope")).toBeNull();
   });
 });

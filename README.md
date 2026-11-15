@@ -15,7 +15,22 @@ node packages/mcp/dist/cli.js mcp-config   # prints the `claude mcp add ...` lin
 npm run app                   # builds, then opens the desktop app
 ```
 
-The app joins the engine already running for the workspace, or starts one. An agent connected over MCP edits the same project you see, and its edits show up live with a note saying who made them.
+The app joins the engine already running for the workspace, or starts one. An agent connected over MCP edits the same project you see, and its edits show up live with a note saying who made them. If the engine ever stops, the window restarts it and reconnects on its own, with the project as it was.
+
+### Windows and Linux
+
+The editor runs on macOS, Windows and Linux. You need Node.js 22+ and FFmpeg on the `PATH` (Windows: `winget install Gyan.FFmpeg`; Ubuntu/Debian: `sudo apt install ffmpeg`). Run `node packages/mcp/dist/cli.js doctor` to see what is installed. Some features depend on optional software:
+
+| Feature | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Editing, effects, transitions, color, LUTs, text, audio, export | yes | yes | yes |
+| Export encoders | VideoToolbox | libx264 / libx265 (software) | libx264 / libx265 (software) |
+| Remove silences | yes | yes | yes (from the audio when there is no transcript) |
+| Transcripts, captions, filler and retake removal, auto edit | whisper.cpp | whisper.cpp | whisper.cpp |
+| Text to speech | system voices | Windows voices | eSpeak NG (`sudo apt install espeak-ng`) |
+| Auto reframe, cutouts, tracking, subject effects | Apple Vision | not available | not available |
+
+The app greys out what this computer cannot do and says what to install. For transcripts, put `whisper-cli` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) on the `PATH` (or set `OPENEDITS_WHISPER` to its path) and download `ggml-large-v3-turbo-q5_0.bin` to the path `doctor` prints. Without a GPU (virtual machines, remote desktops) the preview and exports render in software, which is slower but looks the same.
 
 ### Keep generated files out of iCloud
 
@@ -87,7 +102,9 @@ packages/mcp      Tool registry (defineTool), MCP server, HTTP/WebSocket server,
 - Frames are decoded by FFmpeg (VideoToolbox) and read one-to-one, so frames are exact: tests check that every captured and exported frame is the right source frame, through speed changes, trims, reverse and transitions. Any format FFmpeg reads works without proxies.
 - Exports read the composited pixels back and encode with FFmpeg's VideoToolbox H.264/HEVC encoders (or ProRes). Audio comes from the engine's own mixdown (per-clip time-stretch, volume, fades, voice enhance, ducking, limiter).
 - Images for agents: `captureFrame`, `frameSheet`, `captureSourceFrames`, `view_media`, `previewVideoFrames` and `view_render` return MCP image content as well as file paths.
-- Not drawn yet (reported as warnings): built-in camera log LUTs (custom `.cube` files work), subject/cutout effects, and the effects and transitions listed outside `getCapabilities().rendering`. HDR (HLG/PQ) sources are not tone-mapped yet.
+- Every effect and transition in the catalog is drawn. Subject effects need their subject mask, which Apple Vision computes (macOS only).
+- Built-in camera LUTs are generated from each vendor's published log curve and gamut matrix, with a filmic highlight roll-off. They are a good starting point rather than the vendors' own technical LUTs: Apple Log 2 uses the Apple Log curve, D-Log M the D-Log curve, and Canon and DJI gamuts are approximated by Rec.2020. Custom `.cube` files work too.
+- HDR (HLG/PQ) sources are not tone-mapped yet.
 
 ### Audio analysis
 
@@ -145,7 +162,7 @@ Each project lives at `~/Movies/OpenEdits/projects/<id>/project.db`. The documen
 
 - `detectShots` and `detectCuts` find hard cuts and dissolves frame-accurately (twin-comparison on tiny frame signatures) and group shots by camera angle.
 - An Apple Vision helper (`packages/engine/native/vision.swift`, compiled by the build) runs on-device: `detectSubjects` (faces, people, salient regions), `autoReframe` (static or follow framing, or a stacked split screen when two speakers can't share a vertical frame), `trackObject`, `addStickerFromCutout`, and `applySubjectEffect` (background blur, subject glow, outline from per-frame masks).
-- `applyTextToSpeech` uses macOS voices (`ttsVoices`).
+- `applyTextToSpeech` uses the system's voices (`ttsVoices`): macOS voices, Windows voices, or eSpeak NG on Linux.
 - Autopilot: videos dropped in `~/Movies/OpenEdits/auto-edit` become projects with the STYLE.md first pass and a final render in the outbox (`openedits autopilot`, `openedits serve --autopilot`, or once with `openedits auto-edit FILE`). Each job runs in its own engine, so it never touches the project you have open. `list_autopilot_jobs` reports them.
 
 ### Optional Claude features

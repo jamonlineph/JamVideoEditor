@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { addMediaToTimeline, addShape, addText, addTransition, applyEffect, applyLut, setColorGrade, setOpacity, setReversed, setSpeed, setTransform, trimElement, type VideoElement } from "@openedits/core";
+import { EFFECTS_CATALOG, TRANSITIONS_CATALOG, addMediaToTimeline, addShape, addText, addTransition, applyEffect, applyLut, setColorGrade, setOpacity, setReversed, setSpeed, setTransform, trimElement, type VideoElement } from "@openedits/core";
 import { EngineHost, fpsExpression, type RenderOutput } from "../src/index.js";
 import { counterLeftLevel, frameTime, level, readCounter, tempWorkspace, testMedia } from "./media.js";
 
@@ -107,15 +107,46 @@ describe("frame server", () => {
     host.mutate("lut", "t", (c) => applyLut(c, c.draft.elements[clip], { id: "custom", cubePath: cube, intensity: 100 }));
     expect(await left(T)).toBeCloseTo(255 - base, -1);
     host.undo("t");
-    host.mutate("builtin", "t", (c) => {
-      applyLut(c, c.draft.elements[clip], { id: "apple_log_to_rec709", intensity: 100 });
-      applyEffect(c, c.draft.elements[clip], { effectId: "kaleidoscope", intensity: 50 });
-      applyEffect(c, c.draft.elements[clip], { effectId: "blur", intensity: 50 });
-    });
+    // Built-in camera LUTs are generated from the log curves: a bright log patch comes out brighter still.
+    host.mutate("builtin", "t", (c) => applyLut(c, c.draft.elements[clip], { id: "sony_slog3_sgamut3_to_rec709", intensity: 100 }));
+    const graded = await capture(T);
+    expect(graded.warnings).toEqual([]);
+    expect(level(graded.path, "left")).toBeGreaterThan(base + 20);
+    host.undo("t");
+    host.mutate("blur", "t", (c) => applyEffect(c, c.draft.elements[clip], { effectId: "blur", intensity: 50 }));
     const f = await capture(T);
-    expect(f.warnings.join(" | ")).toMatch(/Built-in LUT "apple_log_to_rec709" is not bundled/);
-    expect(f.warnings.join(" | ")).toMatch(/Effect "kaleidoscope" is not rendered yet/);
+    expect(f.warnings).toEqual([]);
     expect(level(f.path, "left")).toBeCloseTo(base, -1); // blurring a flat patch barely changes its middle
+    host.undo("t");
+  });
+
+  it("draws every catalog effect and transition without skipping any", async () => {
+    // A busy picture (test pattern) so every effect has something to change.
+    const imp = await host.importMedia([m.clipB]);
+    const busy = host.mutate("busy", "t", (c) => addMediaToTimeline(c, c.draft.media[imp.assets[0].id], { index: 0 }).id).result;
+    const plain = await host.render.captureFrame({ timeSeconds: 1.3, shortSide: 180, format: "png" });
+    const plainAt1 = await host.render.captureFrame({ timeSeconds: 1, shortSide: 180, format: "png" });
+    const differs = (file: string, at1 = false) => {
+      const a = fs.readFileSync(at1 ? plainAt1.path : plain.path);
+      const b = fs.readFileSync(file);
+      return a.length !== b.length || !a.equals(b);
+    };
+    const effects = EFFECTS_CATALOG.filter((e) => !e.data.requiresSubjectMask).map((e) => e.id);
+    for (const effectId of effects) {
+      // Pulsing effects peak on whole seconds at 1 Hz.
+      const pulsing = effectId === "flash" || effectId === "zoom_pulse";
+      host.mutate(effectId, "t", (c) => applyEffect(c, c.draft.elements[busy], { effectId, intensity: 100, params: pulsing ? { frequency: 1 } : {} }));
+      const f = await host.render.captureFrame({ timeSeconds: pulsing ? 1 : 1.3, shortSide: 180, format: "png" });
+      expect(f.warnings, effectId).toEqual([]);
+      expect(differs(f.path, pulsing), `${effectId} changed the picture`).toBe(true);
+      host.undo("t");
+    }
+    for (const t of TRANSITIONS_CATALOG.filter((x) => x.id !== "none")) {
+      host.mutate(t.id, "t", (c) => addTransition(c, { fromElementId: busy, type: t.id, durationSeconds: 1 }));
+      const mid = await host.render.captureFrame({ timeSeconds: 4 - 0.3, shortSide: 180, format: "png" });
+      expect(mid.warnings, t.id).toEqual([]);
+      host.undo("t");
+    }
     host.undo("t");
   });
 

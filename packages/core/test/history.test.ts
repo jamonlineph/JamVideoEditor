@@ -3,6 +3,7 @@ import fc from "fast-check";
 import {
   addMediaToTimeline,
   addText,
+  applyEffect,
   deleteElements,
   duplicateElement,
   mainTrack,
@@ -23,6 +24,31 @@ import {
   type Session,
 } from "../src/index.js";
 import { makeSession } from "./fixtures.js";
+
+describe("transaction results", () => {
+  it("returns plain copies of draft objects, readable (and serializable) after the transaction", () => {
+    const s = makeSession();
+    const el = s.transact("add", "t", (ctx) => addMediaToTimeline(ctx, ctx.draft.media.med_a, {})).result;
+    // Ops return the element they edited; the draft behind it is revoked when the transaction ends.
+    expect(() => JSON.stringify(el)).not.toThrow();
+    expect(el.id).toBe(mainTrack(s.state).elementIds[0]);
+    const fx = s.transact("fx", "t", (ctx) => ({ inst: applyEffect(ctx, ctx.draft.elements[el.id], { effectId: "vignette", intensity: 40 }), list: [ctx.draft.elements[el.id]] })).result;
+    expect(JSON.parse(JSON.stringify(fx)).inst.intensity).toBe(40);
+    expect(fx.list[0].id).toBe(el.id);
+  });
+
+  it("changing one effect setting keeps the others", () => {
+    const s = makeSession();
+    const id = s.transact("add", "t", (ctx) => addMediaToTimeline(ctx, ctx.draft.media.med_a, {}).id).result;
+    const inst = s.transact("fx", "t", (ctx) => applyEffect(ctx, ctx.draft.elements[id], { effectId: "vignette", intensity: 30 })).result!;
+    s.transact("param", "t", (ctx) => applyEffect(ctx, ctx.draft.elements[id], { effectId: "vignette", instanceId: inst.instanceId, params: { softness: 20 } }));
+    const after = (s.state.elements[id] as { effects: { intensity: number; params: Record<string, unknown> }[] }).effects[0];
+    expect(after.intensity).toBe(30);
+    expect(after.params).toEqual({ softness: 20 });
+    s.transact("int", "t", (ctx) => applyEffect(ctx, ctx.draft.elements[id], { effectId: "vignette", instanceId: inst.instanceId, intensity: 80 }));
+    expect((s.state.elements[id] as { effects: { intensity: number; params: Record<string, unknown> }[] }).effects[0]).toMatchObject({ intensity: 80, params: { softness: 20 } });
+  });
+});
 
 describe("history", () => {
   it("undo/redo/replace and version tracking", () => {

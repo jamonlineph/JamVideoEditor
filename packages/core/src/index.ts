@@ -31,6 +31,7 @@ export * from "./render/timeMap.js";
 export * from "./render/audioPlan.js";
 export * from "./render/scene.js";
 export * from "./render/support.js";
+export * from "./render/luts.js";
 export * from "./transcript/words.js";
 export * from "./transcript/ops.js";
 export * from "./ops/reframe.js";

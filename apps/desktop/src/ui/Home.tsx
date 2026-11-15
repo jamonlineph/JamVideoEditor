@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { live, useLive } from "./live.js";
+import path from "node:path";
+import { additiveClick, live, useLive, WORKSPACE } from "./live.js";
 import { SHORTCUT_MAPS, type ShortcutMapId } from "./shortcuts.js";
 
 interface ProjectRow {
@@ -131,7 +132,7 @@ export function Home() {
                 <div
                   key={p.id}
                   className={`card ${selected.includes(p.id) ? "selected" : ""}`}
-                  onClick={(e) => toggle(p.id, e.metaKey || e.shiftKey)}
+                  onClick={(e) => toggle(p.id, additiveClick(e))}
                   onDoubleClick={() => void live.run("openProject", { projectId: p.id })}
                 >
                   <div className="thumb" style={{ aspectRatio: p.aspectRatio.replace(":", " / ") }}>
@@ -175,7 +176,7 @@ export function Home() {
         <aside>
           <h2 style={{ marginTop: 0 }}>Inbox</h2>
           {inbox.length === 0 ? (
-            <div className="muted small">Drop media into ~/Movies/OpenEdits/inbox.</div>
+            <div className="muted small">Drop media into {path.join(WORKSPACE, "inbox")}.</div>
           ) : (
             inbox.map((f) => (
               <div className="list-row" key={f.path}>

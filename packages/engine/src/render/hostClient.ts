@@ -43,7 +43,9 @@ export class RenderHostClient {
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     this.starting = new Promise<void>((resolve, reject) => {
-      const child = spawn(electron, [main], { stdio: ["ignore", "ignore", "ignore", "ipc"], env });
+      // Chromium refuses to start as root with its sandbox on (containers, CI).
+      const args = [main, ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [])];
+      const child = spawn(electron, args, { stdio: ["ignore", "ignore", process.env.OPENEDITS_RENDER_DEBUG ? "inherit" : "ignore", "ipc"], env });
       this.child = child;
       const timer = setTimeout(() => fail(new Error("The render host did not start within 30 s")), 30_000);
       const fail = (e: Error) => {
@@ -56,7 +58,7 @@ export class RenderHostClient {
         reject(new EditError("INTERNAL", e.message));
       };
       child.on("error", fail);
-      child.on("exit", (code) => fail(new Error(`The render host exited (${code})`)));
+      child.on("exit", (code, signal) => fail(new Error(`The render host exited (${code ?? signal})`)));
       child.on("message", (msg: { type?: string; id?: number; ok?: boolean; result?: unknown; error?: string; progress?: Record<string, unknown>; message?: string; versions?: Record<string, string> }) => {
         if (msg.type === "ready") {
           clearTimeout(timer);

@@ -3,7 +3,7 @@ import path from "node:path";
 import { EditError, compositionDuration, fpsExpression, frameTimes, renderContextFor, renderSizeFor, type Project } from "@openedits/core";
 import type { EngineHost } from "../host.js";
 import type { JobInfo } from "../jobs.js";
-import { ffmpegPath, runFfmpeg, writeWav } from "../ffmpeg.js";
+import { expandHome, ffmpegPath, runFfmpeg, videoEncoderArgs, writeWav } from "../ffmpeg.js";
 import { renderAudioMix } from "../audio/mix.js";
 import { RenderHostClient } from "./hostClient.js";
 
@@ -128,7 +128,7 @@ export class RenderService {
       if (!m) throw new EditError("MEDIA_NOT_FOUND", `No media with id "${opts.mediaId}"`);
       ({ path: file, name, kind, width, height, durationSourceSeconds: duration } = m);
     } else if (opts.path) {
-      file = path.resolve(opts.path.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
+      file = path.resolve(expandHome(opts.path));
       const probe = await this.host.prober(file);
       name = path.basename(file);
       ({ kind, width, height, durationSourceSeconds: duration } = probe);
@@ -201,10 +201,7 @@ export class RenderService {
       const mix = await renderAudioMix(project, { startSeconds: start, endSeconds: start + durationSeconds, signal: job.signal });
       const wav = path.join(audioDir, `mix-${this.stamp()}.wav`);
       writeWav(wav, mix.samples, mix.sampleRate, 2);
-      const video =
-        codec === "prores" ? ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le", "-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"]
-        : codec === "hevc" ? ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p", "-c:v", "hevc_videotoolbox", "-b:v", String(bitrate), "-tag:v", "hvc1", "-allow_sw", "1"]
-        : ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p", "-c:v", "h264_videotoolbox", "-b:v", String(bitrate), "-profile:v", "high", "-allow_sw", "1"];
+      const video = videoEncoderArgs(codec, bitrate, { fast: preview }).args;
       const audio = codec === "prores" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", `${preview ? 128 : settings.audioBitrateKbps}k`];
       const ffmpegArgs = [
         "-v", "error", "-y", "-nostdin",

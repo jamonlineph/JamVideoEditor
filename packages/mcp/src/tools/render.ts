@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { EditError, compositionDuration } from "@openedits/core";
-import type { JobInfo, RenderOutput } from "@openedits/engine";
+import { expandHome, type JobInfo, type RenderOutput } from "@openedits/engine";
 import { IMAGES_KEY, defineTool, type ToolContext } from "../defineTool.js";
 import { round } from "./common.js";
 
@@ -64,7 +64,7 @@ function resolveMediaRef(ctx: ToolContext, ref: string): { mediaId?: string; pat
     const byName = Object.values(media).find((m) => m.name === ref);
     if (byName) return { mediaId: byName.id };
   }
-  const expanded = ref.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
+  const expanded = expandHome(ref);
   const inInbox = path.join(ctx.host.paths.inbox, expanded);
   if (!path.isAbsolute(expanded) && fs.existsSync(inInbox)) return { path: inInbox };
   if (fs.existsSync(expanded)) return { path: path.resolve(expanded) };

@@ -22,6 +22,8 @@ export async function runTool(tool: ToolDef, args: unknown, ctx: ToolContext): P
   try {
     const parsed = tool.input.parse(args ?? {});
     const result = await tool.handler(parsed, ctx);
+    // Fail this call (not the transport) if the handler returned something that cannot be sent.
+    JSON.stringify(result);
     return { ok: true, result };
   } catch (e) {
     if (e instanceof EditError) return { ok: false, error: e.toJSON() };

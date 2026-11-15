@@ -6,7 +6,14 @@ import { Compositor } from "@openedits/renderer";
 import { MediaManager } from "./media.js";
 
 const canvas = document.createElement("canvas");
-const compositor = new Compositor(canvas);
+let compositor: Compositor;
+try {
+  compositor = new Compositor(canvas);
+} catch (e) {
+  // Without this the engine would wait forever for answers this page can never give.
+  ipcRenderer.send("to-engine", { type: "fatal", message: (e as Error).message });
+  throw e;
+}
 
 const media = new MediaManager(compositor);
 

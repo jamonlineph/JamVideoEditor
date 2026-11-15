@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { addMediaToTimeline, normalizeWord, timelineWords } from "@openedits/core";
 import { ClaudeClient, EngineHost, autoEditFiles, describeClip, findRetakesWithAi, listAutopilotJobs, AutopilotWatcher, loadSettings, resolveWorkspace, type TimelineWord } from "../src/index.js";
 import { FakeAi } from "./fakeAi.js";
-import { speechClip, tempWorkspace, testMedia } from "./media.js";
+import { canSpeak, haveWhisper, speechClip, tempWorkspace, testMedia } from "./media.js";
 
 const w = (id: number, text: string, start: number): TimelineWord => ({ id, text, start, end: start + 0.3, elementId: "el", mediaId: "m", isFiller: false, confidence: 1 });
 const WORDS = [w(1, "Second,", 0), w(2, "cut", 0.4), w(3, "the", 0.8), w(4, "silences.", 1.2), w(5, "Second,", 2), w(6, "cut", 2.4), w(7, "every", 2.8), w(8, "silence.", 3.2)];
@@ -64,7 +64,8 @@ describe("model-assisted helpers (fake model)", () => {
   });
 });
 
-describe("retake detection in edits", () => {
+// These need real speech and whisper.cpp with its model.
+describe.runIf(haveWhisper && canSpeak)("retake detection in edits", () => {
   let host: EngineHost;
   beforeAll(async () => {
     host = EngineHost.create({ workspaceRoot: tempWorkspace("ai-edit"), validate: true, ai: new FakeAi(() => ({ retakes: [] }), "Claude features are off (test)") });
@@ -97,7 +98,7 @@ describe("retake detection in edits", () => {
   });
 });
 
-describe("autopilot", () => {
+describe.runIf(haveWhisper && canSpeak)("autopilot", () => {
   it("turns a dropped video into an edited, rendered project without touching the open project", { timeout: 240_000 }, async () => {
     const root = tempWorkspace("autopilot");
     const main = EngineHost.create({ workspaceRoot: root });

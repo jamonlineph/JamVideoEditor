@@ -23,9 +23,15 @@ export function mediaHandles(project: Project, el: Element): { head: number; tai
   return { head: headSrc / rates.head, tail: tailSrc / rates.tail };
 }
 
-/** Longest centered transition the two adjacent elements can support. */
-export function maxTransitionDuration(project: Project, from: Element, to: Element): number {
-  const a = mediaHandles(project, from).tail;
-  const b = mediaHandles(project, to).head;
-  return Math.min(2 * Math.min(a, b), from.duration, to.duration);
+/**
+ * Longest centered transition between two adjacent elements: it may not outlast either clip.
+ * Media handles do not limit it; where a clip has no spare footage past the cut, its edge frame is held.
+ */
+export function maxTransitionDuration(_project: Project, from: Element, to: Element): number {
+  return Math.min(from.duration, to.duration);
+}
+
+/** Longest centered transition that only shows moving footage (no held edge frames). */
+export function handleCoveredTransitionDuration(project: Project, from: Element, to: Element): number {
+  return 2 * Math.min(mediaHandles(project, from).tail, mediaHandles(project, to).head);
 }

@@ -145,7 +145,19 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
   });
   const tools = new Map(allTools().map((t) => [t.name, t]));
   wss.on("connection", (ws: WebSocket) => {
-    const send = (msg: unknown) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(msg));
+    const send = (msg: unknown) => {
+      if (ws.readyState !== ws.OPEN) return;
+      let text: string;
+      try {
+        text = JSON.stringify(msg);
+      } catch (e) {
+        // A result that cannot be serialized fails that one call, not the engine.
+        const id = (msg as { id?: unknown })?.id;
+        text = JSON.stringify({ type: "result", id, ok: false, error: { code: "INTERNAL", message: `Could not serialize the result: ${(e as Error).message}` } });
+      }
+      ws.send(text);
+    };
+    ws.on("error", () => ws.terminate());
     send({ type: "hello", version: VERSION, appState: host.appState, project: host.isOpen ? { id: host.projectId, version: host.session.version, state: host.project } : null });
     const onChange = (e: ChangeEvent) => send({ type: "change", ...e, ...(e.kind === "open" && host.isOpen ? { state: host.project } : {}) });
     const onApp = (s: AppState) => send({ type: "appState", appState: s });
@@ -175,8 +187,12 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
       if (msg.type !== "call" || !msg.tool) return send({ type: "error", id: msg.id, message: "expected {type:'call', id, tool, args}" });
       const tool = tools.get(msg.tool);
       if (!tool) return send({ type: "result", id: msg.id, ok: false, error: { code: "INVALID_ARGUMENT", message: `Unknown tool ${msg.tool}` } });
-      const r = await runTool(tool, msg.args, { host, source: "ui" });
-      send({ type: "result", id: msg.id, ...r });
+      try {
+        const r = await runTool(tool, msg.args, { host, source: "ui" });
+        send({ type: "result", id: msg.id, ...r });
+      } catch (e) {
+        send({ type: "result", id: msg.id, ok: false, error: { code: "INTERNAL", message: (e as Error)?.message ?? String(e) } });
+      }
     });
   });
 

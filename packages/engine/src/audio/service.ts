@@ -12,7 +12,7 @@ import {
   type MediaAsset,
 } from "@openedits/core";
 import type { EngineHost } from "../host.js";
-import { decodePcm, runFfmpeg, writeWav } from "../ffmpeg.js";
+import { decodePcm, expandHome, runFfmpeg, writeWav } from "../ffmpeg.js";
 import { detectHums } from "./dsp.js";
 import { renderAudioMix, toMono } from "./mix.js";
 
@@ -93,7 +93,7 @@ export class AudioService {
       if (!m.hasAudio) throw new EditError("UNSUPPORTED_MEDIA", `${m.name} has no audio`);
       return { path: m.path, duration: m.durationSourceSeconds, name: m.name };
     }
-    const p = path.resolve(target.path!.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
+    const p = path.resolve(expandHome(target.path!));
     if (!fs.existsSync(p)) throw new EditError("FILE_NOT_FOUND", `File not found: ${p}`, { path: p });
     return { path: p, name: path.basename(p) };
   }

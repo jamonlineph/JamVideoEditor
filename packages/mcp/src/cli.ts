@@ -5,7 +5,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AutopilotWatcher, EngineHost, autoEditFiles, loadSettings, resolveWorkspace } from "@openedits/engine";
+import { AutopilotWatcher, EngineHost, autoEditFiles, ffmpegEncoders, loadSettings, resolveWorkspace, speechAvailable, visionAvailable, whisperAvailable } from "@openedits/engine";
 import { createMcpServer } from "./server.js";
 import { findRunningEngine, startHttpServer, type HttpServerHandle } from "./http.js";
 import { runStdioProxy } from "./proxy.js";
@@ -80,6 +80,9 @@ async function cmdServe(args: string[]) {
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+  // The engine holds the open project for the app and every agent: log a stray error instead of dying with it.
+  process.on("uncaughtException", (e) => log(`unexpected error (engine keeps running): ${e?.stack ?? e}`));
+  process.on("unhandledRejection", (e) => log(`unhandled rejection (engine keeps running): ${(e as Error)?.stack ?? e}`));
 }
 
 async function cmdMcp(args: string[]) {
@@ -212,17 +215,28 @@ function version(cmd: string, args: string[]): string | null {
 async function cmdDoctor() {
   const paths = resolveWorkspace();
   const settings = loadSettings(paths);
-  const checks: [string, string | null, string][] = [
+  const mac = process.platform === "darwin";
+  const win = process.platform === "win32";
+  const ffmpegFix = mac ? "brew install ffmpeg" : win ? "winget install Gyan.FFmpeg (then reopen the terminal)" : "sudo apt install ffmpeg";
+  const encoders = ffmpegEncoders();
+  const h264 = ["h264_videotoolbox", "libx264", "libopenh264", "h264_mf", "h264_nvenc", "h264_qsv", "h264_amf"].find((e) => encoders.has(e)) ?? null;
+  const required: [string, string | null, string][] = [
     ["node", process.version, "Node 22+"],
-    ["ffmpeg", version("ffmpeg", ["-version"]), "brew install ffmpeg"],
-    ["ffprobe", version("ffprobe", ["-version"]), "brew install ffmpeg"],
-    ["whisper-cli", fs.existsSync("/opt/homebrew/bin/whisper-cli") || version("which", ["whisper-cli"]) ? "installed" : null, "brew install whisper-cpp (Phase 4)"],
-    ["whisper model", fs.existsSync(settings.whisperModelPath) ? settings.whisperModelPath : null, `expected at ${settings.whisperModelPath}`],
+    ["ffmpeg", version("ffmpeg", ["-version"]), ffmpegFix],
+    ["ffprobe", version("ffprobe", ["-version"]), ffmpegFix],
+    ["H.264 encoder", h264, "install a full ffmpeg build (with libx264)"],
   ];
-  for (const [name, value, fix] of checks) console.log(`${value ? "ok  " : "MISS"} ${name.padEnd(14)} ${value ?? fix}`);
-  console.log(`     workspace      ${paths.root}${fs.existsSync(paths.root) ? "" : " (created on first run)"}`);
+  const optional: [string, string | null, string][] = [
+    ["whisper-cli", (await whisperAvailable()) ? "installed (transcripts, captions, filler and retake removal)" : null, mac ? "brew install whisper-cpp" : "download whisper.cpp from github.com/ggml-org/whisper.cpp/releases, add whisper-cli to PATH (or set OPENEDITS_WHISPER)"],
+    ["whisper model", fs.existsSync(settings.whisperModelPath) ? settings.whisperModelPath : null, `download ggml-large-v3-turbo-q5_0.bin from huggingface.co/ggerganov/whisper.cpp to ${settings.whisperModelPath}`],
+    ["text to speech", (await speechAvailable()) ? (mac ? "macOS voices" : win ? "Windows voices" : "eSpeak NG") : null, mac || win ? "no system voice found" : "sudo apt install espeak-ng"],
+    ["subject vision", visionAvailable() ? "Apple Vision" : null, mac ? "install the Xcode command line tools, then npm run build" : "macOS only (auto reframe, cutouts, tracking, subject effects)"],
+  ];
+  for (const [name, value, fix] of required) console.log(`${value ? "ok  " : "MISS"} ${name.padEnd(15)} ${value ?? fix}`);
+  for (const [name, value, fix] of optional) console.log(`${value ? "ok  " : "--  "} ${name.padEnd(15)} ${value ?? `optional: ${fix}`}`);
+  console.log(`     workspace       ${paths.root}${fs.existsSync(paths.root) ? "" : " (created on first run)"}`);
   const running = await findRunningEngine(paths.engineFile);
-  console.log(`     engine         ${running ? `running (pid ${running.pid}, port ${running.port})` : "not running"}`);
+  console.log(`     engine          ${running ? `running (pid ${running.pid}, port ${running.port})` : "not running"}`);
 }
 
 function cmdMcpConfig() {

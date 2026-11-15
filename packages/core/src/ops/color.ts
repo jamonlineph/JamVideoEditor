@@ -63,7 +63,7 @@ type WithEffects = Extract<Element, { effects: EffectInstance[] }>;
 export function applyEffect(
   ctx: EditContext,
   el: Element,
-  opts: { effectId: string; intensity: number; params?: Record<string, number | string | boolean>; instanceId?: string; remove?: boolean; subjectMaskId?: string },
+  opts: { effectId: string; intensity?: number; params?: Record<string, number | string | boolean>; instanceId?: string; remove?: boolean; subjectMaskId?: string },
 ): EffectInstance | null {
   if (!("effects" in el)) throw new EditError("INVALID_ELEMENT_TYPE", `Element ${el.id} (${el.type}) cannot have effects`);
   const target = el as WithEffects;
@@ -78,7 +78,8 @@ export function applyEffect(
   if (opts.instanceId) {
     const existing = target.effects.find((e) => e.instanceId === opts.instanceId);
     if (!existing) throw new EditError("INVALID_ARGUMENT", `No effect instance ${opts.instanceId} on ${el.id}`);
-    existing.intensity = opts.intensity;
+    // Only what the caller passed changes: a parameter tweak keeps the intensity, and the other way round.
+    if (opts.intensity !== undefined) existing.intensity = opts.intensity;
     if (opts.params) existing.params = { ...existing.params, ...opts.params };
     ctx.touch(el.id);
     return existing;
@@ -86,7 +87,7 @@ export function applyEffect(
   const inst: EffectInstance = {
     instanceId: ctx.ids("fx"),
     effectId: opts.effectId,
-    intensity: opts.intensity,
+    intensity: opts.intensity ?? 100,
     params: opts.params ?? {},
     ...(opts.subjectMaskId ? { subjectMaskId: opts.subjectMaskId } : {}),
   };

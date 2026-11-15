@@ -129,7 +129,7 @@ export const colorTools = [
         throw new EditError("INVALID_ARGUMENT", `"${a.effectId}" is a subject effect: use applySubjectEffect, which computes the subject mask`);
       }
       const id = resolveElementId(ctx, a.elementId);
-      return mutate(ctx, a.remove ? `Remove ${a.effectId}` : `Effect ${a.effectId}`, (c) => applyEffect(c, requireElement(c.draft, id), { ...a, intensity: a.intensity ?? 100 }), { expectedVersion: a.expectedVersion }, (inst) => ({ effect: inst }));
+      return mutate(ctx, a.remove ? `Remove ${a.effectId}` : `Effect ${a.effectId}`, (c) => applyEffect(c, requireElement(c.draft, id), a), { expectedVersion: a.expectedVersion }, (inst) => ({ effect: inst }));
     },
   }),
 ];

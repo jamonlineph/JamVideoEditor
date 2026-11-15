@@ -1,8 +1,66 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import { EditError } from "@openedits/core";
 
 export const ffmpegPath = () => process.env.OPENEDITS_FFMPEG ?? "ffmpeg";
+
+/** Expand a leading "~" to the home directory (works on Windows too, where $HOME is usually unset). */
+export function expandHome(p: string): string {
+  return p.replace(/^~(?=$|[\\/])/, os.homedir());
+}
+
+let encoderCache: { ffmpeg: string; names: Set<string> } | undefined;
+
+/** Names of the encoders this ffmpeg build has (empty when ffmpeg cannot be run). */
+export function ffmpegEncoders(): Set<string> {
+  const ffmpeg = ffmpegPath();
+  if (encoderCache?.ffmpeg === ffmpeg) return encoderCache.names;
+  const names = new Set<string>();
+  try {
+    const out = execFileSync(ffmpeg, ["-hide_banner", "-encoders"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    for (const line of out.split("\n")) {
+      const m = /^\s*[VAS][A-Z.]{5}\s+(\S+)/.exec(line);
+      if (m) names.add(m[1]);
+    }
+  } catch {
+    /* reported when the encoder is actually needed */
+  }
+  encoderCache = { ffmpeg, names };
+  return names;
+}
+
+export type VideoCodec = "h264" | "hevc" | "prores";
+
+/** Encoders to try for each codec, best first. Apple's hardware encoders lead on macOS; elsewhere software ones do, because a listed hardware encoder may have no device behind it. */
+const ENCODER_ORDER: Record<VideoCodec, { mac: string[]; other: string[] }> = {
+  h264: { mac: ["h264_videotoolbox", "libx264", "libopenh264"], other: ["libx264", "libopenh264", "h264_mf", "h264_nvenc", "h264_qsv", "h264_amf"] },
+  hevc: { mac: ["hevc_videotoolbox", "libx265"], other: ["libx265", "hevc_mf", "hevc_nvenc", "hevc_qsv", "hevc_amf"] },
+  prores: { mac: ["prores_ks", "prores"], other: ["prores_ks", "prores"] },
+};
+
+/** Pick the video encoder for a codec on this machine, with its ffmpeg arguments (pixel format and color matrix included). */
+export function videoEncoderArgs(codec: VideoCodec, bitrate: number, opts: { fast?: boolean } = {}): { encoder: string; args: string[] } {
+  const available = ffmpegEncoders();
+  const order = ENCODER_ORDER[codec][process.platform === "darwin" ? "mac" : "other"];
+  // If ffmpeg could not be asked, try the first choice and let the encode report the problem.
+  const encoder = available.size ? order.find((e) => available.has(e)) : order[0];
+  if (!encoder) {
+    const label = codec === "h264" ? "H.264" : codec === "hevc" ? "HEVC" : "ProRes";
+    throw new EditError("INTERNAL", `This ffmpeg has no ${label} encoder (looked for ${order.join(", ")}). Install a full ffmpeg build${codec === "h264" ? "" : ", or export as H.264"}.`);
+  }
+  const b = String(Math.round(bitrate));
+  if (codec === "prores") return { encoder, args: ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le", "-c:v", encoder, "-profile:v", "3", ...(encoder === "prores_ks" ? ["-vendor", "apl0"] : [])] };
+  const format = ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"];
+  const preset = opts.fast ? "veryfast" : "medium";
+  let enc: string[];
+  if (encoder === "h264_videotoolbox") enc = ["-b:v", b, "-profile:v", "high", "-allow_sw", "1"];
+  else if (encoder === "hevc_videotoolbox") enc = ["-b:v", b, "-tag:v", "hvc1", "-allow_sw", "1"];
+  else if (encoder === "libx264") enc = ["-preset", preset, "-b:v", b, "-maxrate", String(Math.round(bitrate * 1.5)), "-bufsize", String(Math.round(bitrate * 2)), "-profile:v", "high"];
+  else if (encoder === "libx265") enc = ["-preset", preset, "-b:v", b, "-tag:v", "hvc1", "-x265-params", "log-level=error"];
+  else enc = ["-b:v", b, ...(codec === "hevc" ? ["-tag:v", "hvc1"] : [])];
+  return { encoder, args: [...format, "-c:v", encoder, ...enc] };
+}
 
 export interface RunOptions {
   signal?: AbortSignal;

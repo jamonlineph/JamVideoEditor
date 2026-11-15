@@ -23,7 +23,7 @@
     "openedits": "node packages/mcp/dist/cli.js",
     "clean": "find packages/*/dist/ apps/desktop/dist/ -mindepth 1 -delete; rm -f packages/*/tsconfig.tsbuildinfo",
     "test:unit": "vitest run packages/core packages/engine",
-    "app": "npm run build && electron apps/desktop"
+    "app": "npm run build && node scripts/app.mjs"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

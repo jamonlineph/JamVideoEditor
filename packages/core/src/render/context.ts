@@ -1,4 +1,5 @@
 import type { MediaAsset, Project } from "../schema.js";
+import { isBuiltinLut } from "./luts.js";
 
 /** What a compositor host needs to read each media file the project draws. */
 export interface MediaRenderInfo {
@@ -45,7 +46,7 @@ export function renderContextFor(project: Project, opts: { ffmpeg: string; hideC
     if ("effects" in el) for (const fx of el.effects) if (fx.subjectMaskId) used.add(fx.subjectMaskId);
     if ("color" in el && el.color.lut) {
       if (el.color.lut.cubePath) luts[el.color.lut.cubePath] = el.color.lut.cubePath;
-      else warnings.push(`Built-in LUT "${el.color.lut.id}" is not bundled yet and was skipped; use lutId "custom" with a .cube file`);
+      else if (!isBuiltinLut(el.color.lut.id)) warnings.push(`LUT "${el.color.lut.id}" is unknown and was skipped; use lutId "custom" with a .cube file`);
     }
   }
   for (const id of used) {

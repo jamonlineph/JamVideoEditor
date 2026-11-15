@@ -245,16 +245,25 @@ describe("free tracks and ripple tiers", () => {
 });
 
 describe("transitions, split screen, captions", () => {
-  it("transitions clamp to media handles and drop when clips separate", () => {
+  it("transitions work on untrimmed clips (edge frames are held), clamp to the shorter clip and drop when clips separate", () => {
     const { s, a, b } = twoClips();
-    expect(() => s.transact("tr", "t", (ctx) => addTransition(ctx, { fromElementId: a, type: "dissolve", durationSeconds: 1 }))).toThrow(/Not enough media/);
+    // Two whole clips have no spare footage at the cut: the transition is still added, with a note.
+    const whole = s.transact("tr", "t", (ctx) => addTransition(ctx, { fromElementId: a, type: "dissolve", durationSeconds: 1 }));
+    expect(whole.result!.durationSeconds).toBe(1);
+    expect(whole.warnings.join(" ")).toMatch(/edge frames are held/);
+    s.undo("t");
     s.transact("trim", "t", (ctx) => {
-      trimElement(ctx, ctx.draft.elements[a], "right", 0.2);
+      trimElement(ctx, ctx.draft.elements[a], "right", 0.6);
       trimElement(ctx, ctx.draft.elements[b], "left", 1);
     });
+    // With handles on both sides there is nothing to warn about.
     const r = s.transact("tr", "t", (ctx) => addTransition(ctx, { fromElementId: a, type: "dissolve", durationSeconds: 1 }));
-    expect(r.result!.durationSeconds).toBeCloseTo(0.4);
-    expect(r.warnings.length).toBe(1);
+    expect(r.result!.durationSeconds).toBe(1);
+    expect(r.warnings).toEqual([]);
+    const shorter = Math.min(s.state.elements[a].duration, s.state.elements[b].duration);
+    const long = s.transact("tr", "t", (ctx) => addTransition(ctx, { fromElementId: a, type: "dissolve", durationSeconds: 100 }));
+    expect(long.result!.durationSeconds).toBeCloseTo(shorter);
+    expect(long.warnings.join(" ")).toMatch(/shortened/);
     s.transact("reorder", "t", (ctx) => reorderMain(ctx, ctx.draft.elements[b], 0));
     expect(s.state.transitions).toEqual([]);
   });

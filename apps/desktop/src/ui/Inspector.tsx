@@ -16,12 +16,13 @@ import {
   TRANSITIONS_CATALOG,
   WHEELS,
   evaluateKeyframes,
+  fontStack,
   mainTrack,
   type Element,
   type KeyframeProperty,
   type Project,
 } from "@openedits/core";
-import { live, selectedElements, useLive } from "./live.js";
+import { live, selectedElements, useFeatures, useLive, type Features } from "./live.js";
 import { ui, useUi, capturePointer } from "./uiStore.js";
 
 type Args = Record<string, unknown>;
@@ -185,18 +186,76 @@ function ProjectPanel({ project }: { project: Project }) {
         <Select label="Beat markers" value={project.beatDensity} options={["off", "lowest", "low", "medium", "high", "extreme"]} onChange={(v) => run("setBeatDensity", { density: v })} />
         <Title>Brief</Title>
         <textarea rows={5} style={{ width: "100%" }} placeholder="What this video is for (agents read this)" value={brief} onChange={(e) => setBrief(e.target.value)} onBlur={() => brief !== project.brief && run("setBrief", { brief })} />
-        <Title>Transcript edits</Title>
-        <div className="row" style={{ flexWrap: "wrap" }}>
-          <button onClick={() => run("edit", { ops: [{ op: "remove_silences" }] })}>Remove silences</button>
-          <button onClick={() => run("edit", { ops: [{ op: "remove_fillers" }] })}>Remove fillers</button>
-          <button onClick={() => run("edit", { ops: [{ op: "remove_retakes" }] })}>Remove retakes</button>
-          <button className="primary" onClick={() => run("auto_edit", { wait_seconds: 0 })}>
-            Auto edit
-          </button>
-        </div>
+        <TranscriptActions />
       </div>
     </div>
   );
+}
+
+type EditResult = { results?: { op: string; removedSeconds?: number; pauses?: number }[]; notes?: string[]; status?: string; error?: { message: string }; result?: { results?: { op: string; removedSeconds?: number }[] } };
+
+/** Transcript-driven clean-up. Long jobs show progress and report what they did (or why they could not). */
+function TranscriptActions() {
+  const features = useFeatures();
+  const [busy, setBusy] = useState<string | null>(null);
+  const hasMain = mainTrack(useLive().project!).elementIds.length > 0;
+  const summarize = (results: { op: string; removedSeconds?: number }[] | undefined) => {
+    const removed = (results ?? []).reduce((s, r) => s + (r.removedSeconds ?? 0), 0);
+    return removed > 0 ? `Removed ${removed.toFixed(1)} s` : "Nothing to remove";
+  };
+  const go = async (label: string, tool: string, args: Args) => {
+    if (busy) return;
+    if (!hasMain) return live.toast("info", "Add a clip to the main track first");
+    setBusy(label);
+    try {
+      const r = await live.call<EditResult>(tool, args);
+      if (r.status === "failed") live.toast("error", r.error?.message ?? `${label} failed`);
+      else if (r.status === "running") live.toast("info", `${label} is still running in the background`);
+      else live.toast("info", `${label}: ${summarize(r.results ?? r.result?.results)}`);
+      for (const note of r.notes ?? []) if (/audio \(no transcript/.test(note)) live.toast("info", "Found the silences from the audio (no transcript needed)");
+    } catch (e) {
+      live.toast("error", (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const words = !features || features.transcription;
+  return (
+    <>
+      <Title>Transcript edits</Title>
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        <button disabled={!!busy} onClick={() => void go("Remove silences", "edit", { ops: [{ op: "remove_silences" }] })}>
+          Remove silences
+        </button>
+        <button disabled={!!busy || !words} onClick={() => void go("Remove fillers", "edit", { ops: [{ op: "remove_fillers" }] })}>
+          Remove fillers
+        </button>
+        <button disabled={!!busy || !words} onClick={() => void go("Remove retakes", "edit", { ops: [{ op: "remove_retakes" }] })}>
+          Remove retakes
+        </button>
+        <button className="primary" disabled={!!busy || !words} onClick={() => void go("Auto edit", "auto_edit", { wait_seconds: 1800 })}>
+          Auto edit
+        </button>
+      </div>
+      {busy && <div className="muted small" style={{ marginTop: 6 }}>{busy}… (transcribing first if needed)</div>}
+      {!words && (
+        <div className="muted small" style={{ marginTop: 6 }}>
+          Fillers, retakes, captions and auto edit need whisper.cpp (whisper-cli) and a Whisper model, which are not installed. Remove silences still works: it finds the pauses in the audio.
+        </div>
+      )}
+    </>
+  );
+}
+
+/** A note shown in panels that need software this computer does not have. */
+function Unavailable({ features, need }: { features: Features | null; need: keyof Features }) {
+  if (!features || features[need]) return null;
+  const text = {
+    vision: "This needs Apple's Vision framework, which is only available on macOS.",
+    speech: process.platform === "win32" ? "No Windows voice is available (System.Speech could not be loaded)." : "Text to speech needs eSpeak NG on Linux (sudo apt install espeak-ng), then restart the app.",
+    transcription: "This needs whisper.cpp (whisper-cli) and a Whisper model.",
+  }[need];
+  return <div className="muted small" style={{ marginBottom: 8, color: "var(--accent)" }}>{text}</div>;
 }
 
 function MultiPanel({ project, ids }: { project: Project; ids: string[] }) {
@@ -219,6 +278,8 @@ function MultiPanel({ project, ids }: { project: Project; ids: string[] }) {
 }
 
 function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Element; project: Project; playhead: number; onMain: boolean }) {
+  const features = useFeatures();
+  const noVision = !!features && !features.vision;
   const elementId = el.id;
   const call = (tool: string, args: Args = {}) => run(tool, { elementId, ...args });
   const kfAt = (prop: KeyframeProperty) => (el.keyframes?.[prop]?.length ? playhead : undefined);
@@ -319,13 +380,14 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     case "autoReframe":
       return (
         <>
+          <Unavailable features={features} need="vision" />
           <div className="muted small">Tracks faces and people to keep them in frame for the project aspect.</div>
           <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <button className="primary" onClick={() => run("autoReframe", { elementIds: [elementId], mode: "follow" })}>
+            <button className="primary" disabled={noVision} onClick={() => run("autoReframe", { elementIds: [elementId], mode: "follow" })}>
               Follow subject
             </button>
-            <button onClick={() => run("autoReframe", { elementIds: [elementId], mode: "static" })}>Static</button>
-            <button onClick={() => run("autoReframe", { elementIds: [elementId], splitTwoSpeakers: true })}>Two speakers</button>
+            <button disabled={noVision} onClick={() => run("autoReframe", { elementIds: [elementId], mode: "static" })}>Static</button>
+            <button disabled={noVision} onClick={() => run("autoReframe", { elementIds: [elementId], splitTwoSpeakers: true })}>Two speakers</button>
           </div>
         </>
       );
@@ -524,17 +586,19 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     case "cutout":
       return (
         <>
+          <Unavailable features={features} need="vision" />
           <div className="muted small">Lift the person or subject at the playhead into a sticker, or track it for the rest of the clip.</div>
           <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <button className="primary" onClick={() => call("addStickerFromCutout", { time: playhead, kind: "person" })}>
+            <button className="primary" disabled={noVision} onClick={() => call("addStickerFromCutout", { time: playhead, kind: "person" })}>
               Cut out person
             </button>
-            <button onClick={() => call("addStickerFromCutout", { time: playhead, kind: "subject" })}>Cut out subject</button>
-            <button onClick={() => call("trackObject", { target: "person" })}>Track person</button>
+            <button disabled={noVision} onClick={() => call("addStickerFromCutout", { time: playhead, kind: "subject" })}>Cut out subject</button>
+            <button disabled={noVision} onClick={() => call("trackObject", { target: "person" })}>Track person</button>
           </div>
         </>
       );
     case "subjectEffect":
+      if (noVision) return <Unavailable features={features} need="vision" />;
       return (
         <Tiles
           items={EFFECTS_CATALOG.filter((e) => e.data.requiresSubjectMask)}
@@ -574,7 +638,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
               className={`tile${family === f.data.family ? " active" : ""}`}
               onClick={() => (el.type === "text" ? call("setTextFont", { fontFamily: f.data.family }) : run("setCaptionStyle", { styleId: el.styleId, elementIds: [elementId], overrides: { fontFamily: f.data.family } }))}
             >
-              <span style={{ fontFamily: f.data.family, fontSize: 16 }}>Aa</span>
+              <span style={{ fontFamily: fontStack(f.data.family), fontSize: 16 }}>Aa</span>
               <span className="label">{f.name}</span>
             </div>
           ))}
@@ -602,7 +666,12 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       return <Tiles items={TEXT_PRESETS} active={el.presetId} onPick={(p) => call("applyTextPreset", { presetId: p })} />;
     case "textToSpeech":
       if (el.type !== "text") return null;
-      return <TtsPanel onSpeak={(voice, rate) => call("applyTextToSpeech", { ...(voice ? { voice } : {}), rate })} />;
+      return (
+        <>
+          <Unavailable features={features} need="speech" />
+          {(!features || features.speech) && <TtsPanel onSpeak={(voice, rate) => call("applyTextToSpeech", { ...(voice ? { voice } : {}), rate })} />}
+        </>
+      );
     case "captionsTranscript":
       if (el.type !== "caption") return null;
       return <CaptionWords el={el} />;

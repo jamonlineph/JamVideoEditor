@@ -1,4 +1,4 @@
-import type { CaptionLayer, ShapeLayer, StickerLayer, TextLayer, TextStyle } from "@openedits/core";
+import { fontStack, type CaptionLayer, type ShapeLayer, type StickerLayer, type TextLayer, type TextStyle } from "@openedits/core";
 
 export interface Raster {
   canvas: OffscreenCanvas;
@@ -22,7 +22,7 @@ interface Segment {
 type Ctx = OffscreenCanvasRenderingContext2D;
 
 function fontString(style: TextStyle, px: number, weight: number) {
-  return `${style.italic ? "italic " : ""}${weight} ${px.toFixed(2)}px "${style.fontFamily}", "Helvetica Neue", "Arial", sans-serif`;
+  return `${style.italic ? "italic " : ""}${weight} ${px.toFixed(2)}px ${fontStack(style.fontFamily)}`;
 }
 
 function setSpacing(ctx: Ctx, px: number) {

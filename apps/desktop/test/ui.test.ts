@@ -109,6 +109,21 @@ describe("desktop app", () => {
     await app.waitFor(`document.querySelectorAll(".lane.main .clip").length === ${count}`);
   });
 
+  it("restarts a crashed engine and reconnects without losing the project", async () => {
+    const before = await mainIds();
+    const engine = JSON.parse(fs.readFileSync(path.join(ws, ".engine.json"), "utf8")) as { pid: number };
+    process.kill(engine.pid, "SIGKILL");
+    await app.waitFor(`!window.openedits.live.state.connected`, 5000);
+    await app.waitFor(`window.openedits.live.state.connected && window.openedits.live.state.project`, 30_000);
+    expect(await mainIds()).toEqual(before);
+    const fresh = JSON.parse(fs.readFileSync(path.join(ws, ".engine.json"), "utf8")) as { pid: number };
+    expect(fresh.pid).not.toBe(engine.pid);
+    // The agent rejoins the new engine.
+    await agent.close();
+    agent = await connectAgent(ws);
+    expect((await agent.call<{ project: { id: string } }>("get_project")).project.id).toBeTruthy();
+  }, 60_000);
+
   it("records a voiceover an agent asks for (fake microphone)", async () => {
     const start = await agent.call<{ recording: boolean; start: number }>("startVoiceoverRecording", { start: 0.5, preRollSeconds: 0 });
     expect(start.recording).toBe(true);

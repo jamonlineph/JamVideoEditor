@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { AspectRatioSchema, EditError, FpsSchema, ResolutionSchema, addMediaToTimeline, compositionDuration, mainTrack, setBrief } from "@openedits/core";
-import { AutopilotWatcher, listAutopilotJobs } from "@openedits/engine";
+import { AutopilotWatcher, expandHome, listAutopilotJobs } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
 import { expectedVersion, mutate, projectSummary, round, summarize } from "./common.js";
 
@@ -18,7 +18,7 @@ function projectRow(ctx: ToolContext, id: string) {
 /** Resolve inbox file names (or absolute/relative paths) to absolute paths. */
 function resolveFiles(ctx: ToolContext, files: string[]): string[] {
   return files.map((f) => {
-    const expanded = f.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
+    const expanded = expandHome(f);
     if (path.isAbsolute(expanded)) return expanded;
     const inInbox = path.join(ctx.host.paths.inbox, expanded);
     return fs.existsSync(inInbox) ? inInbox : path.resolve(expanded);

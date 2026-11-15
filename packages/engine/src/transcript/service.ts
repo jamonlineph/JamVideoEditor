@@ -2,14 +2,14 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { EditError, applyTranscriptOps, isFillerWord, mainTrack, type MediaTranscript, type OpResult, type TranscriptIndex, type TranscriptOp, type TranscriptWord } from "@openedits/core";
+import { EditError, applyTranscriptOps, cleanTime, isFillerWord, mainTrack, removeMainRanges, type MediaTranscript, type OpResult, type TranscriptIndex, type TranscriptOp, type TranscriptWord } from "@openedits/core";
 import { parseStyleGuide, type AutoEditPlan } from "./style.js";
 import { findRetakesWithAi } from "../ai/features.js";
 import { timelineWords } from "@openedits/core";
 import type { EngineHost } from "../host.js";
 import type { JobContext, JobInfo } from "../jobs.js";
 import { decodePcm, runFfmpeg } from "../ffmpeg.js";
-import { levelStats, quietPoint, rmsEnvelope, type Envelope } from "../audio/dsp.js";
+import { findPauses, levelStats, quietPoint, rmsEnvelope, type Envelope } from "../audio/dsp.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +19,25 @@ const SAMPLE_RATE = 16000;
 const CHUNK_SECONDS = 60;
 
 export const whisperPath = () => process.env.OPENEDITS_WHISPER ?? "whisper-cli";
+
+const WHISPER_MISSING =
+  "Transcription needs whisper.cpp (the whisper-cli program), which is not installed. macOS: `brew install whisper-cpp`. Windows and Linux: download it from github.com/ggml-org/whisper.cpp/releases and add it to PATH, or set OPENEDITS_WHISPER to its full path.";
+
+let whisperFound: { path: string; ok: boolean } | undefined;
+
+/** Whether the whisper.cpp CLI can be started (checked once per path). */
+export async function whisperAvailable(): Promise<boolean> {
+  const bin = whisperPath();
+  if (whisperFound?.path === bin) return whisperFound.ok;
+  let ok = true;
+  try {
+    await execFileAsync(bin, ["--help"], { windowsHide: true, timeout: 15_000 });
+  } catch (e) {
+    ok = (e as NodeJS.ErrnoException).code !== "ENOENT"; // a non-zero exit still means it is there
+  }
+  whisperFound = { path: bin, ok };
+  return ok;
+}
 
 export interface RawWord {
   text: string;
@@ -194,6 +213,7 @@ export class TranscriptService {
       await execFileAsync(whisperPath(), args, { signal, maxBuffer: 64 * 1024 * 1024 });
     } catch (e) {
       if (signal.aborted) throw new EditError("INTERNAL", "Cancelled");
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new EditError("NOT_IMPLEMENTED", WHISPER_MISSING);
       throw new EditError("INTERNAL", `whisper-cli failed: ${(e as Error).message.split("\n").slice(0, 2).join(" ")}`);
     }
     const json = JSON.parse(fs.readFileSync(`${outBase}.json`, "utf8"));
@@ -208,7 +228,10 @@ export class TranscriptService {
     if (!media) throw new EditError("MEDIA_NOT_FOUND", `No media with id "${mediaId}"`);
     if (!media.hasAudio) throw new EditError("UNSUPPORTED_MEDIA", `${media.name} has no audio to transcribe`);
     const model = host.settings.whisperModelPath;
-    if (!fs.existsSync(model)) throw new EditError("FILE_NOT_FOUND", `Whisper model not found at ${model} (settings.whisperModelPath)`);
+    if (!(await whisperAvailable())) throw new EditError("NOT_IMPLEMENTED", WHISPER_MISSING);
+    if (!fs.existsSync(model)) {
+      throw new EditError("FILE_NOT_FOUND", `Transcription needs a Whisper model and none was found at ${model}. Download ${path.basename(model)} (or another ggml model) from huggingface.co/ggerganov/whisper.cpp and put it there, or point whisperModelPath in settings.json at the model you have.`, { path: model });
+    }
     const language = opts.language ?? host.settings.language ?? "auto";
     const dir = path.join(host.projectDirPath, "cache", "transcripts");
     fs.mkdirSync(dir, { recursive: true });
@@ -321,9 +344,66 @@ export class TranscriptService {
     return { ops: out, notes };
   }
 
+  /**
+   * Silence removal from the audio itself, for when there is no transcript and whisper.cpp is not
+   * installed: pauses in each main-track clip's sound are cut (keeping padding next to speech).
+   */
+  async removeSilencesFromAudio(op: Extract<TranscriptOp, { op: "remove_silences" }>, source: string, opts: { expectedVersion?: number } = {}) {
+    const host = this.host;
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== host.session.version) {
+      throw new EditError("VERSION_CONFLICT", `Project changed (version ${host.session.version}, expected ${opts.expectedVersion}); re-read and retry`, { currentVersion: host.session.version });
+    }
+    const project = host.project;
+    const min = op.minSilenceSeconds ?? host.settings.minSilenceSeconds;
+    const pad = op.paddingSeconds ?? host.settings.cutPaddingSeconds;
+    const ranges: { start: number; end: number }[] = [];
+    const skipped: string[] = [];
+    for (const id of mainTrack(project).elementIds) {
+      const el = project.elements[id];
+      if (el?.type !== "video" && el?.type !== "audio") continue;
+      if (!project.media[el.mediaId]?.hasAudio || (el.type === "video" && el.audioDetached)) continue;
+      if (el.speed.mode !== "constant") {
+        skipped.push(el.id);
+        continue;
+      }
+      const loaded = await host.audio.load({ elementId: id }, 16000);
+      const env = rmsEnvelope(loaded.pcm, loaded.sampleRate);
+      const stats = levelStats(loaded.pcm, env);
+      const clipEnd = el.start + el.duration;
+      for (const p of findPauses(env, stats.silenceThresholdDb, min, loaded.durationSeconds)) {
+        const a = loaded.toOutput(p.start);
+        const b = loaded.toOutput(p.end);
+        const s = Math.max(el.start, Math.min(a, b));
+        const e = Math.min(clipEnd, Math.max(a, b));
+        // Keep a little air next to speech, but cut silence at the clip's own edges completely.
+        const start = s <= el.start + 0.02 ? el.start : s + pad;
+        const end = e >= clipEnd - 0.02 ? clipEnd : e - pad;
+        if (end - start >= 1 / project.canvas.fps) ranges.push({ start, end });
+      }
+    }
+    const notes = ["Silences were found from the audio (no transcript; install whisper.cpp for word-accurate cuts, fillers and retakes)"];
+    if (skipped.length) notes.push(`Clips with speed ramps were left as they are: ${skipped.join(", ")}`);
+    if (!ranges.length) {
+      return { result: [{ op: "remove_silences", removedSeconds: 0, pauses: 0, ranges: [] }], version: host.session.version, label: "Remove silences", noop: true, changed: { elementIds: [], trackIds: [] }, created: [], removed: [], warnings: [], revisionBefore: undefined, notes: [...notes, "No silences long enough to cut were found"] };
+    }
+    const revision = host.saveRevision("Before remove silences", source);
+    const res = host.mutate("Remove silences", source, (ctx) => {
+      const removedSeconds = removeMainRanges(ctx, ranges, "inward");
+      return [{ op: "remove_silences", removedSeconds, pauses: ranges.length, ranges: ranges.map((r) => ({ start: cleanTime(r.start), end: cleanTime(r.end) })) }];
+    });
+    return { ...res, revisionBefore: revision.number, notes };
+  }
+
   /** Run word-id ops as one undo step, saving a numbered revision first (so a whole pass can be reverted). */
   async edit(rawOps: TranscriptOp[], source: string, opts: { expectedVersion?: number; label?: string } = {}) {
     const host = this.host;
+    const missing = this.missingForTimeline();
+    if (missing.length) {
+      // Silence removal works from the audio alone; everything else needs words, so transcribe first.
+      const onlySilences = rawOps.every((o) => o.op === "remove_silences");
+      if (onlySilences && rawOps.length && !(await whisperAvailable())) return this.removeSilencesFromAudio(rawOps[0] as Extract<TranscriptOp, { op: "remove_silences" }>, source, opts);
+      await this.ensure(missing, 30 * 60_000);
+    }
     const { ops, notes } = await this.prepareOps(rawOps);
     const transcripts = this.all();
     if (!Object.keys(transcripts).length) throw new EditError("INVALID_ARGUMENT", "No transcripts yet: run transcribeClip (or auto_edit) first");
