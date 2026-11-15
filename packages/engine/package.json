@@ -1,0 +1,23 @@
+{
+  "name": "@openedits/engine",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@openedits/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.7.0",
+    "@openedits/core": "0.1.0",
+    "@openedits/render-host": "0.1.0",
+    "better-sqlite3": "^13.1.1"
+  }
+}

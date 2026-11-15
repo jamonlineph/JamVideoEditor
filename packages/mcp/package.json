@@ -1,0 +1,26 @@
+{
+  "name": "@openedits/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "openedits": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "@openedits/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ws": "^8.23.0",
+    "@openedits/core": "0.1.0",
+    "@openedits/engine": "0.1.0"
+  }
+}

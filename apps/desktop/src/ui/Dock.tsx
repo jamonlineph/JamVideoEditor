@@ -1,0 +1,316 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import fs from "node:fs";
+import path from "node:path";
+import { ipcRenderer } from "electron";
+import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, mainTrack, type MediaAsset } from "@openedits/core";
+import { live, selectedElements, useLive, WORKSPACE } from "./live.js";
+import { ui, useUi } from "./uiStore.js";
+
+const KIND_ICON: Record<string, string> = { video: "🎬", audio: "🎵", image: "🖼" };
+const KIND_COLOR: Record<string, string> = { video: "var(--video)", audio: "var(--audio)", image: "var(--image)" };
+
+function fmt(sec?: number) {
+  if (sec === undefined) return "";
+  const m = Math.floor(sec / 60);
+  return `${m}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+}
+
+async function importFiles(paths?: string[]) {
+  const files = paths ?? ((await ipcRenderer.invoke("pick-files", {})) as string[]);
+  if (files.length) await live.run("importToMediaPanel", { paths: files });
+}
+
+export function Dock() {
+  const u = useUi();
+  return (
+    <div className="dock">
+      <div className="tabs">
+        {(["media", "audio", "text", "effects"] as const).map((t) => (
+          <button key={t} className={u.dockTab === t ? "active" : ""} onClick={() => ui.set({ dockTab: t })}>
+            {t[0].toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
+      <div className="pane">
+        {u.dockTab === "media" && <MediaTab />}
+        {u.dockTab === "audio" && <AudioTab />}
+        {u.dockTab === "text" && <TextTab />}
+        {u.dockTab === "effects" && <EffectsTab />}
+      </div>
+    </div>
+  );
+}
+
+function MediaTab() {
+  const s = useLive();
+  const project = s.project!;
+  const [filter, setFilter] = useState<"all" | "video" | "audio" | "image">("all");
+  const [unused, setUnused] = useState(false);
+  const [sort, setSort] = useState<"date_imported" | "name" | "duration" | "type">("date_imported");
+  const used = useMemo(() => new Set(Object.values(project.elements).flatMap((e) => ("mediaId" in e ? [e.mediaId] : []))), [s.revision]);
+  const items = Object.values(project.media)
+    .filter((m) => !m.name.startsWith("Subject mask") && (filter === "all" || m.kind === filter) && (!unused || !used.has(m.id)))
+    .sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : sort === "duration" ? (a.durationSourceSeconds ?? 0) - (b.durationSourceSeconds ?? 0) : sort === "type" ? a.kind.localeCompare(b.kind) : a.importedAt - b.importedAt));
+  const add = (m: MediaAsset, overlay = false) => void live.run("addMedia", overlay ? { mediaId: m.id, asOverlay: true, start: ui.get().playhead } : m.kind === "audio" ? { mediaId: m.id, start: ui.get().playhead, role: "music" } : { mediaId: m.id });
+  return (
+    <div
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        const files = [...e.dataTransfer.files].map((f) => (f as File & { path?: string }).path ?? "").filter(Boolean);
+        if (files.length) void importFiles(files);
+      }}
+      style={{ minHeight: "100%" }}
+    >
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button className="primary" onClick={() => void importFiles()}>
+          Import
+        </button>
+        <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} style={{ flex: 1 }}>
+          <option value="date_imported">Date imported</option>
+          <option value="name">Name</option>
+          <option value="duration">Duration</option>
+          <option value="type">Type</option>
+        </select>
+      </div>
+      <div className="chips">
+        {(["all", "video", "audio", "image"] as const).map((f) => (
+          <button key={f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
+            {f === "image" ? "Images" : f[0].toUpperCase() + f.slice(1)}
+          </button>
+        ))}
+        <button className={unused ? "on" : ""} onClick={() => setUnused(!unused)}>
+          Unused
+        </button>
+      </div>
+      {items.length === 0 && <div className="empty small">Drop files here or click Import.</div>}
+      {items.map((m) => (
+        <div
+          key={m.id}
+          className="media-item"
+          draggable
+          onDragStart={(e) => e.dataTransfer.setData("application/x-openedits-media", m.id)}
+          onDoubleClick={() => add(m)}
+          title="Double-click to add · drag onto the timeline · drop on a clip to replace"
+        >
+          <div className="kind" style={{ background: KIND_COLOR[m.kind] }}>
+            {KIND_ICON[m.kind]}
+          </div>
+          <div className="info">
+            <div>{m.name}</div>
+            <div className="muted small">
+              {m.kind === "image" ? `${m.width}×${m.height}` : `${fmt(m.durationSourceSeconds)}${m.width ? ` · ${m.width}×${m.height}` : ""}`}
+              {used.has(m.id) ? "" : " · unused"}
+            </div>
+          </div>
+          <button className="icon ghost" title="Add to the main track" onClick={() => add(m)}>
+            ＋
+          </button>
+          {m.kind !== "audio" && (
+            <button className="icon ghost" title="Add as overlay at the playhead" onClick={() => add(m, true)}>
+              ⧉
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AudioTab() {
+  const s = useLive();
+  const project = s.project!;
+  const [library, setLibrary] = useState<{ name: string; path: string; group: string }[]>([]);
+  const [query, setQuery] = useState("");
+  const [playing, setPlaying] = useState<string | null>(null);
+  const audio = useRef(new Audio());
+  useEffect(() => {
+    const out: { name: string; path: string; group: string }[] = [];
+    for (const [group, dir] of [
+      ["Music", path.join(WORKSPACE, "brand", "music")],
+      ["Sound effects", path.join(WORKSPACE, "brand", "sfx")],
+    ] as const) {
+      try {
+        for (const f of fs.readdirSync(dir)) if (/\.(mp3|m4a|wav|aiff?|flac|ogg)$/i.test(f)) out.push({ name: f, path: path.join(dir, f), group });
+      } catch {
+        /* folder missing */
+      }
+    }
+    setLibrary(out);
+    return () => audio.current.pause();
+  }, []);
+  const preview = (file: string) => {
+    if (playing === file) {
+      audio.current.pause();
+      setPlaying(null);
+      return;
+    }
+    audio.current.src = `file://${file}`;
+    void audio.current.play();
+    setPlaying(file);
+  };
+  const imported = Object.values(project.media).filter((m) => m.kind === "audio" && (!query || m.name.toLowerCase().includes(query.toLowerCase())));
+  const selectedAudio = selectedElements(s).find((e) => e.type === "audio" || e.type === "video");
+  return (
+    <>
+      <input placeholder="Search audio" value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+      {["Music", "Sound effects"].map((group) => (
+        <div key={group}>
+          <div className="section-title">{group}</div>
+          {library.filter((l) => l.group === group && (!query || l.name.toLowerCase().includes(query.toLowerCase()))).length === 0 && (
+            <div className="muted small">Add files to ~/Movies/OpenEdits/brand/{group === "Music" ? "music" : "sfx"}.</div>
+          )}
+          {library
+            .filter((l) => l.group === group && (!query || l.name.toLowerCase().includes(query.toLowerCase())))
+            .map((l) => (
+              <div key={l.path} className="list-row">
+                <button className="icon ghost" onClick={() => preview(l.path)}>
+                  {playing === l.path ? "❚❚" : "▶"}
+                </button>
+                <span className="grow">{l.name}</span>
+                <button className="icon ghost" title="Add at the playhead" onClick={() => void live.run("addMedia", { path: l.path, start: ui.get().playhead, role: group === "Music" ? "music" : "sfx" })}>
+                  ＋
+                </button>
+              </div>
+            ))}
+        </div>
+      ))}
+      <div className="section-title">In this project</div>
+      {imported.map((m) => (
+        <div key={m.id} className="list-row">
+          <button className="icon ghost" onClick={() => preview(m.path)}>
+            {playing === m.path ? "❚❚" : "▶"}
+          </button>
+          <span className="grow">{m.name}</span>
+          <button className="icon ghost" onClick={() => void live.run("addMedia", { mediaId: m.id, start: ui.get().playhead, role: "music" })}>
+            ＋
+          </button>
+        </div>
+      ))}
+      <div className="section-title">Beats</div>
+      <div className="row">
+        <select value={project.beatDensity} onChange={(e) => void live.run("setBeatDensity", { density: e.target.value })}>
+          {["off", "lowest", "low", "medium", "high", "extreme"].map((d) => (
+            <option key={d}>{d}</option>
+          ))}
+        </select>
+        <button disabled={!selectedAudio} title={selectedAudio ? "Detect beats in the selected clip" : "Select a music clip first"} onClick={() => void live.run("audioOnsets", { elementId: selectedAudio!.id, addBeatMarkers: true })}>
+          Detect beats
+        </button>
+      </div>
+      <div className="muted small" style={{ marginTop: 6 }}>
+        {project.beatMarkers.length} beat markers. Moves and trims snap to them.
+      </div>
+    </>
+  );
+}
+
+function TextTab() {
+  const s = useLive();
+  const add = (presetId: string, text = "Your text") => void live.run("addText", { text, start: ui.get().playhead, duration: 3, presetId });
+  const hasMain = mainTrack(s.project!).elementIds.length > 0;
+  return (
+    <>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        Text
+      </div>
+      <div className="tiles">
+        {TEXT_PRESETS.map((p) => {
+          const st = p.data.style;
+          return (
+            <div key={p.id} className="tile" onClick={() => add(p.id)} title={`Add "${p.name}" text at the playhead`}>
+              <span
+                style={{
+                  fontFamily: st.fontFamily,
+                  fontWeight: st.fontWeight,
+                  fontStyle: st.italic ? "italic" : undefined,
+                  color: st.color ?? "#fff",
+                  background: st.backgroundColor,
+                  padding: st.backgroundColor ? "2px 6px" : undefined,
+                  borderRadius: 4,
+                  textTransform: st.uppercase ? "uppercase" : undefined,
+                  WebkitTextStroke: st.strokeColor ? `1px ${st.strokeColor}` : undefined,
+                  textShadow: st.shadowColor ? `0 0 6px ${st.shadowColor}` : undefined,
+                  fontSize: 15,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Aa
+              </span>
+              <span className="label">{p.name}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="section-title">Captions</div>
+      <div className="muted small" style={{ marginBottom: 6 }}>
+        {hasMain ? "Transcribes the main track (on-device) and adds captions in this style." : "Add a talking clip first."}
+      </div>
+      <div className="tiles">
+        {CAPTION_STYLES.map((c) => (
+          <div key={c.id} className="tile" onClick={() => hasMain && void live.run("generateCaptions", { style: c.id })} title={`Captions: ${c.name} (${c.data.mode})`}>
+            <span style={{ fontFamily: c.data.style.fontFamily, fontWeight: c.data.style.fontWeight, textTransform: c.data.style.uppercase ? "uppercase" : undefined, fontSize: 13 }}>
+              word <span style={{ color: c.data.mode === "box" ? "#fff" : c.data.highlightColor, background: c.data.mode === "box" ? c.data.highlightColor : undefined, padding: "0 3px", borderRadius: 3 }}>by</span> word
+            </span>
+            <span className="label">{c.name}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function EffectsTab() {
+  const s = useLive();
+  const [tab, setTab] = useState<"filters" | "effects" | "transitions" | "luts" | "stickers">("filters");
+  const sel = selectedElements(s)[0];
+  const need = (what: string) => live.toast("info", `Select ${what} first`);
+  const items =
+    tab === "filters" ? FILTERS_CATALOG : tab === "effects" ? EFFECTS_CATALOG : tab === "transitions" ? TRANSITIONS_CATALOG : tab === "luts" ? LUTS_CATALOG : STICKERS_CATALOG;
+  const apply = (id: string) => {
+    const p = s.project!;
+    if (tab === "stickers") return void live.run("addSticker", { stickerId: id, start: ui.get().playhead, duration: 3 });
+    if (!sel) return need(tab === "transitions" ? "a main-track clip" : "a clip");
+    if (tab === "filters") return void live.run("applyFilter", { elementId: sel.id, filterId: id });
+    if (tab === "luts") {
+      if (id === "custom")
+        return void ipcRenderer.invoke("pick-files", { title: "Choose a .cube LUT", extensions: ["cube"], multi: false }).then((f: string[]) => {
+          if (f[0]) void live.run("applyLUT", { elementId: sel.id, lutId: "custom", cubePath: f[0] });
+        });
+      return void live.run("applyLUT", { elementId: sel.id, lutId: id });
+    }
+    if (tab === "transitions") {
+      if (!mainTrack(p).elementIds.includes(sel.id)) return need("a main-track clip");
+      return void live.run("addTransition", { fromElementId: sel.id, type: id });
+    }
+    const fx = EFFECTS_CATALOG.find((e) => e.id === id)!;
+    if (fx.data.requiresSubjectMask) return void live.run("applySubjectEffect", { elementId: sel.id, effectId: id, waitSeconds: 0 }).then((r) => r && live.toast("info", "Tracking the subject… the effect appears when it finishes"));
+    return void live.run("applyEffect", { elementId: sel.id, effectId: id });
+  };
+  return (
+    <>
+      <div className="chips">
+        {(["filters", "effects", "transitions", "luts", "stickers"] as const).map((t) => (
+          <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+            {t === "luts" ? "LUTs" : t[0].toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
+      {tab !== "stickers" && <div className="muted small" style={{ marginBottom: 8 }}>{sel ? `Applies to: ${sel.name ?? sel.type}` : "Select a clip to apply."}</div>}
+      <div className="tiles">
+        {(items as { id: string; name: string; category: string; data: { svgPath?: string } }[]).map((i) => (
+          <div key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
+            {tab === "stickers" && i.data.svgPath ? (
+              <svg viewBox="0 0 24 24" width="22" height="22">
+                <path d={i.data.svgPath} fill="white" />
+              </svg>
+            ) : (
+              <span style={{ fontWeight: 600, fontSize: 12 }}>{i.name}</span>
+            )}
+            <span className="label">{i.category}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}

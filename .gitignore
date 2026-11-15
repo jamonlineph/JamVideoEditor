@@ -1,0 +1,9 @@
+node_modules
+dist
+*.tsbuildinfo
+.DS_Store
+coverage/
+.test-media
+.test-workspaces
+packages/engine/bin
+*.nosync/

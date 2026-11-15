@@ -1,0 +1,38 @@
+{
+  "name": "openedits-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OpenEdits Studio: local-first NLE with a first-class MCP server",
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/engine",
+    "packages/renderer",
+    "packages/render-host",
+    "packages/mcp",
+    "apps/desktop"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/build.mjs",
+    "test": "npm run build && vitest run",
+    "test:watch": "vitest",
+    "openedits": "node packages/mcp/dist/cli.js",
+    "clean": "find packages/*/dist/ apps/desktop/dist/ -mindepth 1 -delete; rm -f packages/*/tsconfig.tsbuildinfo",
+    "test:unit": "vitest run packages/core packages/engine",
+    "app": "npm run build && electron apps/desktop"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "esbuild": "^0.28.2",
+    "fast-check": "^4.10.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

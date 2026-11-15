@@ -1,0 +1,17 @@
+{
+  "name": "@openedits/render-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.cjs",
+  "dependencies": {
+    "electron": "45.2.3",
+    "@openedits/core": "0.1.0",
+    "@openedits/renderer": "0.1.0"
+  },
+  "exports": {
+    ".": "./dist/main.cjs",
+    "./package.json": "./package.json",
+    "./media": "./src/media.ts"
+  }
+}

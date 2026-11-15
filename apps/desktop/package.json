@@ -1,0 +1,17 @@
+{
+  "name": "@openedits/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.cjs",
+  "dependencies": {
+    "@openedits/core": "0.1.0",
+    "@openedits/renderer": "0.1.0",
+    "@openedits/render-host": "0.1.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0"
+  }
+}
