@@ -109,7 +109,16 @@ export function Home() {
             {selected.length > 0 && (
               <>
                 <span className="muted small">{selected.length} selected</span>
-                <button onClick={() => selected.forEach((id) => void live.run("togglePin", { projectId: id }).then(refresh))}>Pin</button>
+                <button
+                  onClick={() => {
+                    // Pin the selection (or unpin it when every selected project is already pinned).
+                    const rows = projects.filter((p) => selected.includes(p.id));
+                    const pin = rows.some((p) => !p.pinned);
+                    void Promise.all(rows.filter((p) => p.pinned !== pin).map((p) => live.run("togglePin", { projectId: p.id }))).then(refresh);
+                  }}
+                >
+                  {projects.filter((p) => selected.includes(p.id)).every((p) => p.pinned) ? "Unpin" : "Pin"}
+                </button>
                 <button
                   onClick={() => {
                     if (!confirm(`Move ${selected.length} project${selected.length > 1 ? "s" : ""} to the workspace trash?`)) return;

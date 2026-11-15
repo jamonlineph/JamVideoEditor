@@ -11,7 +11,11 @@ import path from "node:path";
 const ROOT = path.resolve(__dirname, "../../..");
 const CLI = path.join(ROOT, "packages/mcp/dist/cli.js");
 const TEST = process.env.OPENEDITS_UI_TEST === "1";
-const workspace = process.env.OPENEDITS_WORKSPACE ?? path.join(os.homedir(), "Movies", "OpenEdits");
+// Same rule as the engine's defaultWorkspaceRoot (packages/engine/src/workspace.ts).
+const legacyWorkspace = path.join(os.homedir(), "Movies", "OpenEdits");
+const workspace =
+  process.env.OPENEDITS_WORKSPACE ??
+  (process.platform === "darwin" || fs.existsSync(legacyWorkspace) ? legacyWorkspace : path.join(os.homedir(), "Videos", "OpenEdits"));
 const engineFile = path.join(workspace, ".engine.json");
 const debug = (...a: unknown[]) => process.env.OPENEDITS_DEBUG && console.error("[desktop]", ...a);
 
@@ -124,7 +128,13 @@ async function createWindow(info: EngineInfo) {
     minHeight: 700,
     show: !TEST,
     backgroundColor: "#0d0e11",
-    titleBarStyle: "hiddenInset",
+    // The app draws its own title bar. macOS keeps its traffic lights inset; Windows gets native
+    // minimize/maximize/close drawn over it; Linux window managers vary, so it keeps a normal frame.
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset" as const }
+      : process.platform === "win32"
+        ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: "#15171c", symbolColor: "#e9ebef", height: 44 } }
+        : {}),
     title: "OpenEdits Studio",
     webPreferences: {
       // The renderer decodes media with ffmpeg child processes for the live preview.

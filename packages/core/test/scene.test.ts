@@ -3,6 +3,7 @@ import {
   BUILTIN_LUT_IDS,
   LUTS_CATALOG,
   builtinLut,
+  logEncoder,
   addAdjustmentLayer,
   addMediaToTimeline,
   addText,
@@ -203,5 +204,34 @@ describe("built-in camera LUTs", () => {
       }
     }
     expect(builtinLut("nope")).toBeNull();
+  });
+});
+
+describe("log encoding for LUT previews", () => {
+  it("is undone by the matching LUT (round trip within a few percent)", () => {
+    for (const id of BUILTIN_LUT_IDS) {
+      const encode = logEncoder(id)!;
+      const lut = builtinLut(id, 65)!;
+      const n = lut.size;
+      // Trilinear lookup, as the GPU does it.
+      const apply = ([r, g, b]: number[]) => {
+        const p = [r, g, b].map((v) => Math.min(n - 1 - 1e-6, Math.max(0, v * (n - 1))));
+        const i = p.map(Math.floor);
+        const f = p.map((v, k) => v - i[k]);
+        const out = [0, 0, 0];
+        for (let dz = 0; dz < 2; dz++)
+          for (let dy = 0; dy < 2; dy++)
+            for (let dx = 0; dx < 2; dx++) {
+              const w = (dx ? f[0] : 1 - f[0]) * (dy ? f[1] : 1 - f[1]) * (dz ? f[2] : 1 - f[2]);
+              const o = (((i[2] + dz) * n + (i[1] + dy)) * n + (i[0] + dx)) * 3;
+              for (let c = 0; c < 3; c++) out[c] += w * lut.data[o + c];
+            }
+        return out;
+      };
+      for (const rgb of [[0.5, 0.5, 0.5], [0.8, 0.4, 0.2], [0.2, 0.5, 0.7], [0.9, 0.9, 0.6]] as [number, number, number][]) {
+        const back = apply(encode(rgb));
+        for (let c = 0; c < 3; c++) expect(Math.abs(back[c] - rgb[c]), `${id} ${rgb}`).toBeLessThan(0.04);
+      }
+    }
   });
 });

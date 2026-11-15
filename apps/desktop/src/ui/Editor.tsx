@@ -114,9 +114,12 @@ export function Editor() {
       if (a === "import") void importFiles();
     };
     window.addEventListener("menu", onMenu);
+    const onSeek = (e: Event) => viewport.current?.player?.seek((e as CustomEvent<number>).detail);
+    window.addEventListener("openedits-seek", onSeek);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("menu", onMenu);
+      window.removeEventListener("openedits-seek", onSeek);
     };
   }, [shortcutMap]);
 

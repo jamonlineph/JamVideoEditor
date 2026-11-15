@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { compositionDuration, isAudioKind, mainTrack, type Element, type Project, type Track } from "@openedits/core";
 import { additiveClick, live, useLive } from "./live.js";
 import { droppedPaths } from "./Dock.js";
-import { formatTime, ui, useUi, capturePointer } from "./uiStore.js";
+import { formatTime, ui, useUi, capturePointer, seek } from "./uiStore.js";
 
 const LANE_H: Record<string, number> = { main: 64, audio: 40, default: 34 };
 const COLORS: Record<string, string> = {
@@ -383,7 +383,7 @@ function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element
       data-id={el.id}
       style={{ left, width: Math.max(2, width), background: COLORS[el.type], opacity: drag?.kind === "move" && drag.moved ? 0.8 : 1 }}
       onPointerDown={(e) => onPointerDown(e, "body")}
-      onDoubleClick={() => ui.set({ playhead: el.start })}
+      onDoubleClick={() => seek(el.start)}
     >
       {(el.type === "video" || el.type === "audio") && <Waveform el={el} project={project} pps={pps} />}
       <div className="name">

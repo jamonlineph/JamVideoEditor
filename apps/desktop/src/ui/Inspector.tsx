@@ -23,14 +23,16 @@ import {
   type Project,
 } from "@openedits/core";
 import { live, selectedElements, useFeatures, useLive, type Features } from "./live.js";
-import { ui, useUi, capturePointer } from "./uiStore.js";
+import { ui, useUi, capturePointer, seek } from "./uiStore.js";
+import { PreviewTile } from "./PreviewTile.js";
+import type { PreviewKind } from "./thumbs.js";
 
 type Args = Record<string, unknown>;
 const run = (tool: string, args: Args) => void live.run(tool, args);
 const db = (gain: number) => (gain <= 0 ? -60 : 20 * Math.log10(gain));
 
 /** A slider that previews locally and commits once, on release (one undo step per gesture). */
-export function Slider(props: { label: string; value: number; min: number; max: number; step?: number; format?: (v: number) => string; onCommit: (v: number) => void; keyframed?: boolean; onKeyframe?: () => void }) {
+export function Slider(props: { label: string; value: number; min: number; max: number; step?: number; format?: (v: number) => string; onCommit: (v: number) => void; keyframed?: boolean; onKeyframe?: () => void; /** Value a double-click restores (default: 0 when in range, else the minimum). */ reset?: number }) {
   const [local, setLocal] = useState<number | null>(null);
   const v = local ?? props.value;
   const commit = () => {
@@ -57,7 +59,11 @@ export function Slider(props: { label: string; value: number; min: number; max: 
         onPointerUp={commit}
         onKeyUp={commit}
         onBlur={commit}
-        onDoubleClick={() => props.onCommit(props.min < 0 && props.max > 0 ? 0 : props.min)}
+        onDoubleClick={() => {
+          const r = props.reset ?? (props.min <= 0 && props.max >= 0 ? 0 : props.min);
+          setLocal(null);
+          if (r !== props.value) props.onCommit(r);
+        }}
       />
       <span className="val">{props.format ? props.format(v) : Math.abs(v) >= 10 || Number.isInteger(v) ? Math.round(v) : v.toFixed(2)}</span>
     </div>
@@ -112,6 +118,23 @@ function Tiles({ items, active, onPick }: { items: { id: string; name: string }[
           <span style={{ fontSize: 12, fontWeight: 600, textAlign: "center" }}>{i.name}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Tiles that show a rendered preview of what each item does (hover to see it animate). */
+function PreviewTiles({ kind, items, active, onPick }: { kind: PreviewKind; items: { id: string; name: string; category?: string }[]; active?: string; onPick: (id: string) => void }) {
+  return (
+    <div className="tiles">
+      {items.map((i) =>
+        i.id === "custom" ? (
+          <div key={i.id} className={`tile${active === i.id ? " active" : ""}`} onClick={() => onPick(i.id)} title="Choose a .cube file">
+            <span style={{ fontSize: 12, fontWeight: 600, textAlign: "center" }}>{i.name}…</span>
+          </div>
+        ) : (
+          <PreviewTile key={i.id} kind={kind} id={i.id} name={i.name} active={active === i.id} onPick={() => onPick(i.id)} />
+        ),
+      )}
     </div>
   );
 }
@@ -296,9 +319,9 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       const set = (prop: KeyframeProperty, v: number) => call("setTransform", { [prop]: v, ...(kfAt(prop) !== undefined ? { time: playhead } : {}) });
       return (
         <>
-          <Slider label="Position X" value={x} min={-0.5} max={1.5} onCommit={(v) => set("x", v)} keyframed={!!el.keyframes?.x?.length} onKeyframe={addKf("x", x)} />
-          <Slider label="Position Y" value={y} min={-0.5} max={1.5} onCommit={(v) => set("y", v)} keyframed={!!el.keyframes?.y?.length} onKeyframe={addKf("y", y)} />
-          <Slider label="Scale" value={sc} min={0.05} max={5} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => set("scale", v)} keyframed={!!el.keyframes?.scale?.length} onKeyframe={addKf("scale", sc)} />
+          <Slider reset={0.5} label="Position X" value={x} min={-0.5} max={1.5} onCommit={(v) => set("x", v)} keyframed={!!el.keyframes?.x?.length} onKeyframe={addKf("x", x)} />
+          <Slider reset={0.5} label="Position Y" value={y} min={-0.5} max={1.5} onCommit={(v) => set("y", v)} keyframed={!!el.keyframes?.y?.length} onKeyframe={addKf("y", y)} />
+          <Slider reset={1} label="Scale" value={sc} min={0.05} max={5} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => set("scale", v)} keyframed={!!el.keyframes?.scale?.length} onKeyframe={addKf("scale", sc)} />
           <Slider label="Rotation" value={rot} min={-180} max={180} step={1} format={(v) => `${Math.round(v)}°`} onCommit={(v) => set("rotationDegrees", v)} keyframed={!!el.keyframes?.rotationDegrees?.length} onKeyframe={addKf("rotationDegrees", rot)} />
           {(el.type === "video" || el.type === "image") && <Select label="Fit" value={t.fit} options={["cover", "contain"]} onChange={(v) => call("setTransform", { fit: v })} />}
           {el.type === "text" && (
@@ -338,10 +361,10 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
           <Select label="Shape" value={m.type} options={["none", "rectangle", "ellipse", "line", "shutter"]} onChange={(v) => set({ type: v })} />
           {m.type !== "none" && (
             <>
-              <Slider label="Center X" value={m.centerX} min={0} max={1} onCommit={(v) => set({ centerX: v })} />
-              <Slider label="Center Y" value={m.centerY} min={0} max={1} onCommit={(v) => set({ centerY: v })} />
-              <Slider label="Width" value={m.sizeW} min={0} max={1.5} onCommit={(v) => set({ sizeW: v })} />
-              <Slider label="Height" value={m.sizeH} min={0} max={1.5} onCommit={(v) => set({ sizeH: v })} />
+              <Slider reset={0.5} label="Center X" value={m.centerX} min={0} max={1} onCommit={(v) => set({ centerX: v })} />
+              <Slider reset={0.5} label="Center Y" value={m.centerY} min={0} max={1} onCommit={(v) => set({ centerY: v })} />
+              <Slider reset={0.6} label="Width" value={m.sizeW} min={0} max={1.5} onCommit={(v) => set({ sizeW: v })} />
+              <Slider reset={0.6} label="Height" value={m.sizeH} min={0} max={1.5} onCommit={(v) => set({ sizeH: v })} />
               <Slider label="Rotation" value={m.rotation} min={-180} max={180} step={1} onCommit={(v) => set({ rotation: v })} />
               <Slider label="Feather" value={m.feather} min={0} max={1} onCommit={(v) => set({ feather: v })} />
               <Slider label="Corners" value={m.cornerRadius} min={0} max={1} onCommit={(v) => set({ cornerRadius: v })} />
@@ -362,7 +385,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     case "opacity": {
       if (!("opacity" in el)) return null;
       const o = propAt(el, "opacity", el.opacity, playhead);
-      return <Slider label="Opacity" value={o} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => (kfAt("opacity") !== undefined ? call("setTransformKeyframe", { property: "opacity", time: playhead, value: v }) : call("setOpacity", { opacity: v }))} keyframed={!!el.keyframes?.opacity?.length} onKeyframe={addKf("opacity", o)} />;
+      return <Slider reset={1} label="Opacity" value={o} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => (kfAt("opacity") !== undefined ? call("setTransformKeyframe", { property: "opacity", time: playhead, value: v }) : call("setOpacity", { opacity: v }))} keyframed={!!el.keyframes?.opacity?.length} onKeyframe={addKf("opacity", o)} />;
     }
     case "blend":
       if (!("blendMode" in el)) return null;
@@ -396,7 +419,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       const rate = el.speed.mode === "constant" ? el.speed.rate : 1;
       return (
         <>
-          <Slider label="Speed" value={rate} min={0.1} max={10} step={0.05} format={(v) => `${v.toFixed(2)}×`} onCommit={(v) => call("setSpeed", { rate: v })} />
+          <Slider reset={1} label="Speed" value={rate} min={0.1} max={10} step={0.05} format={(v) => `${v.toFixed(2)}×`} onCommit={(v) => call("setSpeed", { rate: v })} />
           <div className="row" style={{ flexWrap: "wrap" }}>
             {[0.5, 1, 1.5, 2, 4].map((r) => (
               <button key={r} className={rate === r && el.speed.mode === "constant" ? "on" : ""} onClick={() => call("setSpeed", { rate: r })}>
@@ -482,9 +505,9 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       return (
         <>
           <Toggle label="Duck under voice" value={el.ducking.enabled} onChange={(v) => call("setDucking", { enabled: v })} />
-          <Slider label="Amount" value={el.ducking.amountDb} min={-40} max={0} step={0.5} format={(v) => `${v.toFixed(1)} dB`} onCommit={(v) => call("setDucking", { amountDb: v, enabled: true })} />
-          <Slider label="Attack" value={el.ducking.attackSeconds} min={0} max={2} step={0.01} format={(v) => `${v.toFixed(2)}s`} onCommit={(v) => call("setDucking", { attackSeconds: v })} />
-          <Slider label="Release" value={el.ducking.releaseSeconds} min={0} max={3} step={0.01} format={(v) => `${v.toFixed(2)}s`} onCommit={(v) => call("setDucking", { releaseSeconds: v })} />
+          <Slider reset={-12} label="Amount" value={el.ducking.amountDb} min={-40} max={0} step={0.5} format={(v) => `${v.toFixed(1)} dB`} onCommit={(v) => call("setDucking", { amountDb: v, enabled: true })} />
+          <Slider reset={0.2} label="Attack" value={el.ducking.attackSeconds} min={0} max={2} step={0.01} format={(v) => `${v.toFixed(2)}s`} onCommit={(v) => call("setDucking", { attackSeconds: v })} />
+          <Slider reset={0.4} label="Release" value={el.ducking.releaseSeconds} min={0} max={3} step={0.01} format={(v) => `${v.toFixed(2)}s`} onCommit={(v) => call("setDucking", { releaseSeconds: v })} />
         </>
       );
     case "extractAudio":
@@ -516,7 +539,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       );
     }
     case "adjustPresets":
-      return <Tiles items={ADJUST_PRESETS} onPick={(p) => call("setColorGrade", { presetId: p })} />;
+      return <PreviewTiles kind="adjust" items={ADJUST_PRESETS} onPick={(p) => call("setColorGrade", { presetId: p })} />;
     case "colorWheels": {
       if (!("color" in el)) return null;
       return (
@@ -542,8 +565,8 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       const f = el.color.filter;
       return (
         <>
-          {f && <Slider label="Intensity" value={f.intensity} min={0} max={100} step={1} onCommit={(v) => call("applyFilter", { filterId: f.id, intensity: v })} />}
-          <Tiles items={[{ id: "none", name: "None" }, ...FILTERS_CATALOG]} active={f?.id ?? "none"} onPick={(p) => call("applyFilter", { filterId: p })} />
+          {f && <Slider reset={100} label="Intensity" value={f.intensity} min={0} max={100} step={1} onCommit={(v) => call("applyFilter", { filterId: f.id, intensity: v })} />}
+          <PreviewTiles kind="filter" items={FILTERS_CATALOG} active={f?.id ?? "none"} onPick={(p) => call("applyFilter", { filterId: p })} />
         </>
       );
     }
@@ -552,8 +575,9 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       const l = el.color.lut;
       return (
         <>
-          {l && <Slider label="Intensity" value={l.intensity} min={0} max={100} step={1} onCommit={(v) => call("applyLUT", { lutId: l.id, ...(l.cubePath ? { cubePath: l.cubePath } : {}), intensity: v })} />}
-          <Tiles
+          {l && <Slider reset={100} label="Intensity" value={l.intensity} min={0} max={100} step={1} onCommit={(v) => call("applyLUT", { lutId: l.id, ...(l.cubePath ? { cubePath: l.cubePath } : {}), intensity: v })} />}
+          <PreviewTiles
+            kind="lut"
             items={[{ id: "none", name: "None" }, ...LUTS_CATALOG]}
             active={l?.id ?? "none"}
             onPick={(p) =>
@@ -575,11 +599,11 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
         <>
           {next && (
             <>
-              <Slider label="Duration" value={next.durationSeconds} min={0.1} max={2} step={0.05} format={(v) => `${v.toFixed(2)}s`} onCommit={(v) => call("addTransition", { fromElementId: elementId, type: next.type, durationSeconds: v })} />
+              <Slider reset={0.5} label="Duration" value={next.durationSeconds} min={0.1} max={2} step={0.05} format={(v) => `${v.toFixed(2)}s`} onCommit={(v) => call("addTransition", { fromElementId: elementId, type: next.type, durationSeconds: v })} />
               <button onClick={() => run("addTransition", { fromElementId: elementId, type: "none" })}>Remove</button>
             </>
           )}
-          <Tiles items={TRANSITIONS_CATALOG} active={next?.type} onPick={(t) => run("addTransition", { fromElementId: elementId, type: t })} />
+          <PreviewTiles kind="transition" items={TRANSITIONS_CATALOG} active={next?.type ?? "none"} onPick={(t) => run("addTransition", { fromElementId: elementId, type: t })} />
         </>
       );
     }
@@ -598,12 +622,19 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
         </>
       );
     case "subjectEffect":
-      if (noVision) return <Unavailable features={features} need="vision" />;
       return (
-        <Tiles
-          items={EFFECTS_CATALOG.filter((e) => e.data.requiresSubjectMask)}
-          onPick={(fx) => void live.run("applySubjectEffect", { elementId, effectId: fx, waitSeconds: 0 }).then((r) => r && live.toast("info", "Tracking the subject… the effect appears when it finishes"))}
-        />
+        <>
+          <Unavailable features={features} need="vision" />
+          <PreviewTiles
+            kind="subject"
+            items={EFFECTS_CATALOG.filter((e) => e.data.requiresSubjectMask)}
+            onPick={(fx) =>
+              noVision
+                ? live.toast("info", "Subject effects need Apple's Vision framework (macOS)")
+                : void live.run("applySubjectEffect", { elementId, effectId: fx, waitSeconds: 0 }).then((r) => r && live.toast("info", "Tracking the subject… the effect appears when it finishes"))
+            }
+          />
+        </>
       );
     case "textEdit":
       if (el.type !== "text") return null;
@@ -614,14 +645,14 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       const set = (patch: Args) => (el.type === "text" ? call("setTextStyle", patch) : run("setCaptionStyle", { styleId: el.styleId, elementIds: [elementId], overrides: patch }));
       return (
         <>
-          <Slider label="Size" value={st.fontSizeNorm ?? 0.06} min={0.01} max={0.3} step={0.002} format={(v) => `${Math.round(v * 1000) / 10}%`} onCommit={(v) => set({ fontSizeNorm: v })} />
+          <Slider reset={0.06} label="Size" value={st.fontSizeNorm ?? 0.06} min={0.01} max={0.3} step={0.002} format={(v) => `${Math.round(v * 1000) / 10}%`} onCommit={(v) => set({ fontSizeNorm: v })} />
           <ColorField label="Color" value={st.color} onChange={(v) => set({ color: v })} />
           <ColorField label="Stroke" value={st.strokeColor} onChange={(v) => set({ strokeColor: v, strokeWidth: st.strokeWidth || 0.08 })} />
           <Slider label="Stroke width" value={st.strokeWidth ?? 0} min={0} max={0.3} step={0.005} onCommit={(v) => set({ strokeWidth: v })} />
           <ColorField label="Background" value={st.backgroundColor} onChange={(v) => set({ backgroundColor: v })} />
           <ColorField label="Shadow" value={st.shadowColor} onChange={(v) => set({ shadowColor: v, shadowBlur: st.shadowBlur || 0.1 })} />
           <Select label="Align" value={st.align ?? "center"} options={["left", "center", "right"]} onChange={(v) => set({ align: v })} />
-          <Slider label="Line height" value={st.lineHeight ?? 1.2} min={0.6} max={2.5} step={0.05} onCommit={(v) => set({ lineHeight: v })} />
+          <Slider reset={1.15} label="Line height" value={st.lineHeight ?? 1.2} min={0.6} max={2.5} step={0.05} onCommit={(v) => set({ lineHeight: v })} />
           <Slider label="Letter spacing" value={st.letterSpacing ?? 0} min={-0.2} max={1} step={0.01} onCommit={(v) => set({ letterSpacing: v })} />
           <Toggle label="Uppercase" value={!!st.uppercase} onChange={(v) => set({ uppercase: v })} />
         </>
@@ -797,17 +828,17 @@ function EffectsPanel({ el, call }: { el: Extract<Element, { effects: unknown }>
                 ✕
               </button>
             </div>
-            <Slider label="Intensity" value={fx.intensity} min={0} max={100} step={1} onCommit={(v) => call("applyEffect", { effectId: fx.effectId, instanceId: fx.instanceId, intensity: v })} />
+            <Slider reset={100} label="Intensity" value={fx.intensity} min={0} max={100} step={1} onCommit={(v) => call("applyEffect", { effectId: fx.effectId, instanceId: fx.instanceId, intensity: v })} />
             {def?.data.params
               .filter((p) => p.type === "number")
               .map((p) => (
-                <Slider key={p.name} label={p.name} value={Number(fx.params[p.name] ?? p.default)} min={p.min ?? 0} max={p.max ?? 100} onCommit={(v) => call("applyEffect", { effectId: fx.effectId, instanceId: fx.instanceId, params: { [p.name]: v } })} />
+                <Slider key={p.name} reset={Number(p.default)} label={p.name} value={Number(fx.params[p.name] ?? p.default)} min={p.min ?? 0} max={p.max ?? 100} onCommit={(v) => call("applyEffect", { effectId: fx.effectId, instanceId: fx.instanceId, params: { [p.name]: v } })} />
               ))}
           </div>
         );
       })}
       <Title>Add effect</Title>
-      <Tiles items={EFFECTS_CATALOG.filter((e) => !e.data.requiresSubjectMask)} onPick={(effectId) => call("applyEffect", { effectId })} />
+      <PreviewTiles kind="effect" items={EFFECTS_CATALOG.filter((e) => !e.data.requiresSubjectMask)} onPick={(effectId) => call("applyEffect", { effectId })} />
     </>
   );
 }
@@ -822,7 +853,7 @@ function KeyframesPanel({ el, playhead }: { el: Element; playhead: number }) {
           <Title>{prop}</Title>
           {kfs.map((k) => (
             <div key={k.offsetSeconds} className="list-row">
-              <button className="icon ghost" title="Go to keyframe" onClick={() => ui.set({ playhead: el.start + k.offsetSeconds })}>
+              <button className="icon ghost" title="Go to keyframe" onClick={() => seek(el.start + k.offsetSeconds)}>
                 ◆
               </button>
               <span className="grow small">
@@ -862,7 +893,7 @@ function TtsPanel({ onSpeak }: { onSpeak: (voice: string, rate: number) => void 
   return (
     <>
       <Select label="Voice" value={voice} options={[["", "System default"], ...voices.map((v) => [v.name, `${v.name} (${v.locale})`] as [string, string])]} onChange={setVoice} />
-      <Slider label="Rate (wpm)" value={rate} min={90} max={360} step={5} onCommit={setRate} />
+      <Slider reset={180} label="Rate (wpm)" value={rate} min={90} max={360} step={5} onCommit={setRate} />
       <button className="primary" onClick={() => onSpeak(voice, rate)}>
         Generate voice
       </button>

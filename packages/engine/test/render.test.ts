@@ -150,6 +150,35 @@ describe("frame server", () => {
     host.undo("t");
   });
 
+  it("every effect parameter changes the picture (no dead sliders)", { timeout: 240_000 }, async () => {
+    const imp = await host.importMedia([m.clipB]);
+    const busy = host.mutate("busy", "t", (c) => addMediaToTimeline(c, c.draft.media[imp.assets[0].id], { index: 0 }).id).result;
+    const shot = async (effectId: string, params: Record<string, number>, t: number) => {
+      host.mutate(effectId, "t", (c) => applyEffect(c, c.draft.elements[busy], { effectId, intensity: 100, params }));
+      const f = await host.render.captureFrame({ timeSeconds: t, shortSide: 360, format: "png" });
+      host.undo("t");
+      return fs.readFileSync(f.path);
+    };
+    const dead: string[] = [];
+    for (const e of EFFECTS_CATALOG.filter((x) => !x.data.requiresSubjectMask)) {
+      for (const p of e.data.params.filter((x) => x.type === "number")) {
+        // Angles and hues wrap around: compare against a quarter turn instead of the far end.
+        const other = /angle|hue/.test(p.name) ? p.min! + 90 : (p.min! + p.max!) / 2;
+        let changed = false;
+        // Intermittent effects (glitch bursts, flashes) only show on some frames: try several moments.
+        for (const t of [1, 1.37, 2.1, 0.5, 1.6, 2.6, 3.1]) {
+          if (!(await shot(e.id, { [p.name]: p.min! }, t)).equals(await shot(e.id, { [p.name]: other }, t))) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed) dead.push(`${e.id}.${p.name}`);
+      }
+    }
+    expect(dead).toEqual([]);
+    host.undo("t");
+  });
+
   it("renders text over video and a labelled frame sheet", async () => {
     const text = host.mutate("text", "t", (c) => addText(c, { text: "MMMMMMMM", start: 0, duration: 2, style: { fontSizeNorm: 0.5, fontWeight: 900, color: "#FFFFFF" } }).id).result;
     expect(level((await capture(0.1)).path, "center")).toBeGreaterThan(120); // white glyphs over a dark frame

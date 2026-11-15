@@ -24,11 +24,11 @@ const USAGE = `OpenEdits Studio ${VERSION}
   openedits auto-edit FILE... [--render final|preview|none] [--name NAME]
                                    hands-free: new project, STYLE.md first pass, render to the outbox
   openedits autopilot [--render final|preview|none]
-                                   watch ~/Movies/OpenEdits/auto-edit and auto-edit every dropped video
+                                   watch the workspace auto-edit folder and auto-edit every dropped video
   openedits doctor                 check ffmpeg, ffprobe, whisper.cpp and the model
   openedits mcp-config             print setup snippets for Claude Code and other clients
 
-  --workspace DIR                  use another workspace (default ~/Movies/OpenEdits, or $OPENEDITS_WORKSPACE)`;
+  --workspace DIR                  use another workspace (default ~/Movies/OpenEdits on macOS, ~/Videos/OpenEdits elsewhere, or $OPENEDITS_WORKSPACE)`;
 
 function takeFlag(args: string[], flag: string): boolean {
   const i = args.indexOf(flag);

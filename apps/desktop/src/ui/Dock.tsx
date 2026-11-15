@@ -5,6 +5,7 @@ import { ipcRenderer, webUtils } from "electron";
 import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, fontStack, mainTrack, type MediaAsset } from "@openedits/core";
 import { fileUrl, live, selectedElements, useFeatures, useLive, WORKSPACE } from "./live.js";
 import { ui, useUi } from "./uiStore.js";
+import { PreviewTile } from "./PreviewTile.js";
 
 const KIND_ICON: Record<string, string> = { video: "🎬", audio: "🎵", image: "🖼" };
 const KIND_COLOR: Record<string, string> = { video: "var(--video)", audio: "var(--audio)", image: "var(--image)" };
@@ -271,6 +272,7 @@ function TextTab() {
             key={c.id}
             className="tile"
             onClick={() => {
+              if (features && !features.transcription) return live.toast("info", "Captions need whisper.cpp (whisper-cli) and a Whisper model. Run `openedits doctor` for setup steps.");
               if (!hasMain) return live.toast("info", "Add a talking clip to the main track first");
               live.toast("info", "Transcribing and adding captions…");
               void live.run("generateCaptions", { style: c.id }).then((r) => r && live.toast("info", "Captions added"));
@@ -326,18 +328,37 @@ function EffectsTab() {
       </div>
       {tab !== "stickers" && <div className="muted small" style={{ marginBottom: 8 }}>{sel ? `Applies to: ${sel.name ?? sel.type}` : "Select a clip to apply."}</div>}
       <div className="tiles">
-        {(items as { id: string; name: string; category: string; data: { svgPath?: string } }[]).map((i) => (
-          <div key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
-            {tab === "stickers" && i.data.svgPath ? (
-              <svg viewBox="0 0 24 24" width="22" height="22">
-                <path d={i.data.svgPath} fill="white" />
-              </svg>
-            ) : (
-              <span style={{ fontWeight: 600, fontSize: 12 }}>{i.name}</span>
-            )}
-            <span className="label">{i.category}</span>
-          </div>
-        ))}
+        {(items as { id: string; name: string; category: string; data: { svgPath?: string; requiresSubjectMask?: boolean } }[]).map((i) => {
+          if (tab === "stickers" || i.id === "custom") {
+            return (
+              <div key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
+                {i.data.svgPath ? (
+                  <svg viewBox="0 0 24 24" width="22" height="22">
+                    <path d={i.data.svgPath} fill="white" />
+                  </svg>
+                ) : (
+                  <span style={{ fontWeight: 600, fontSize: 12 }}>{i.name}…</span>
+                )}
+                <span className="label">{i.category}</span>
+              </div>
+            );
+          }
+          const kind = tab === "filters" ? "filter" : tab === "transitions" ? "transition" : tab === "luts" ? "lut" : i.data.requiresSubjectMask ? "subject" : "effect";
+          const active = sel && tab === "filters" && "color" in sel ? (sel.color.filter?.id ?? "none") === i.id : sel && tab === "luts" && "color" in sel ? (sel.color.lut?.id ?? "none") === i.id : false;
+          return (
+            <PreviewTile
+              key={i.id}
+              kind={kind}
+              id={i.id}
+              name={i.name}
+              label={i.category}
+              active={active}
+              title={kind === "subject" ? `${i.name} (follows the subject; macOS)` : i.name}
+              badge={kind === "subject" ? <span className="badge">subject</span> : undefined}
+              onPick={() => apply(i.id)}
+            />
+          );
+        })}
       </div>
     </>
   );

@@ -168,7 +168,7 @@ export const projectTools = [
     name: "list_inbox",
     title: "List inbox",
     category: "project",
-    description: "Media files dropped in the inbox watch folder (~/Movies/OpenEdits/inbox). With probe, includes duration, size and codecs.",
+    description: "Media files dropped in the inbox watch folder (the workspace inbox folder). With probe, includes duration, size and codecs.",
     input: z.object({ probe: z.boolean().optional() }),
     readOnly: true,
     handler: async (a, ctx) => ({ inbox: ctx.host.paths.inbox, files: await ctx.host.listInbox({ probe: a.probe }) }),
@@ -236,7 +236,7 @@ export const projectTools = [
     name: "list_autopilot_jobs",
     title: "List autopilot jobs",
     category: "project",
-    description: "Hands-free jobs: videos dropped in ~/Movies/OpenEdits/auto-edit become projects with the STYLE.md first pass applied and a final render in the outbox (run `openedits autopilot` or `openedits serve --autopilot` to watch the folder). Shows recent jobs and files still waiting.",
+    description: "Hands-free jobs: videos dropped in the workspace auto-edit folder become projects with the STYLE.md first pass applied and a final render in the outbox (run `openedits autopilot` or `openedits serve --autopilot` to watch the folder). Shows recent jobs and files still waiting.",
     input: z.object({ limit: z.number().int().min(1).max(200).optional() }),
     readOnly: true,
     handler: (a, ctx) => ({

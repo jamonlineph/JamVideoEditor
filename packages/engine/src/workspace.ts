@@ -33,8 +33,15 @@ export interface Settings {
   claude: { model: string; apiKeyEnv: string; enabled?: boolean };
 }
 
+/**
+ * ~/Movies/OpenEdits on macOS; ~/Videos/OpenEdits on Windows and Linux (their standard video
+ * folder), unless a ~/Movies/OpenEdits workspace is already there.
+ */
 export function defaultWorkspaceRoot(): string {
-  return process.env.OPENEDITS_WORKSPACE ?? path.join(os.homedir(), "Movies", "OpenEdits");
+  if (process.env.OPENEDITS_WORKSPACE) return process.env.OPENEDITS_WORKSPACE;
+  const movies = path.join(os.homedir(), "Movies", "OpenEdits");
+  if (process.platform === "darwin" || fs.existsSync(movies)) return movies;
+  return path.join(os.homedir(), "Videos", "OpenEdits");
 }
 
 export function resolveWorkspace(root = defaultWorkspaceRoot()): WorkspacePaths {

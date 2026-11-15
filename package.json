@@ -21,7 +21,7 @@
     "test": "npm run build && vitest run",
     "test:watch": "vitest",
     "openedits": "node packages/mcp/dist/cli.js",
-    "clean": "find packages/*/dist/ apps/desktop/dist/ -mindepth 1 -delete; rm -f packages/*/tsconfig.tsbuildinfo",
+    "clean": "node scripts/clean.mjs",
     "test:unit": "vitest run packages/core packages/engine",
     "app": "npm run build && node scripts/app.mjs"
   },

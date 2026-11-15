@@ -122,3 +122,46 @@ export function builtinLut(id: string, size = 33): { size: number; data: Float32
   }
   return { size, data };
 }
+
+function invert3(m: Matrix): Matrix {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const A = e * i - f * h;
+  const B = -(d * i - f * g);
+  const C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * h - b * g) / det, (a * e - b * d) / det];
+}
+
+/** Inverse of a monotone increasing function on [lo, hi], by bisection. */
+function inverseOf(fn: (x: number) => number, lo: number, hi: number): (y: number) => number {
+  return (y) => {
+    let a = lo;
+    let b = hi;
+    for (let k = 0; k < 40; k++) {
+      const mid = (a + b) / 2;
+      if (fn(mid) < y) a = mid;
+      else b = mid;
+    }
+    return (a + b) / 2;
+  };
+}
+
+/**
+ * The opposite of a built-in camera LUT: turns a Rec.709 display color (0..1) into the log signal a
+ * camera in that profile would record, so that the LUT brings it back. Used for previews (what a
+ * LUT does to its camera's footage). Null for an unknown id.
+ */
+export function logEncoder(id: string): ((rgb: [number, number, number]) => [number, number, number]) | null {
+  const profile = PROFILES[id];
+  if (!profile) return null;
+  const curve = CURVES[profile.curve];
+  const toCamera = invert3(GAMUTS[profile.gamut]);
+  const fromDisplay = inverseOf(display, 0, 64);
+  const toCode = inverseOf(curve, 0, 1);
+  const floor = curve(0);
+  return ([r, g, b]) => {
+    const lin = [fromDisplay(r), fromDisplay(g), fromDisplay(b)];
+    const cam = [0, 1, 2].map((k) => Math.max(floor, toCamera[k * 3] * lin[0] + toCamera[k * 3 + 1] * lin[1] + toCamera[k * 3 + 2] * lin[2]));
+    return [toCode(cam[0]), toCode(cam[1]), toCode(cam[2])];
+  };
+}

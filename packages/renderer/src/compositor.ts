@@ -483,7 +483,12 @@ export class Compositor {
       zoom_pulse: [pct("amount", 15), num("frequency", 2), 0, 0],
       denoise: [pct("amount", 40), 0, 0, 0],
     };
-    const strength = fx.effectId === "vignette" ? amount * (num("amount", 40) / 40) * 0.6 : amount;
+    // Effects with an "amount" parameter scale their strength by it (the catalog default gives 1x).
+    const AMOUNT_DEFAULTS: Record<string, number> = { film_grain: 25, sharpen: 40, chromatic_aberration: 20 };
+    const strength =
+      fx.effectId === "vignette" ? amount * (num("amount", 40) / 40) * 0.6
+      : fx.effectId in AMOUNT_DEFAULTS ? amount * (num("amount", AMOUNT_DEFAULTS[fx.effectId]) / AMOUNT_DEFAULTS[fx.effectId])
+      : amount;
     return this.runEffect(src, type, params[fx.effectId] ?? [0, 0, 0, 0], strength, time);
   }
 

@@ -57,7 +57,7 @@ claude mcp add openedits -- node "$PWD/packages/mcp/dist/cli.js" mcp   # run fro
 | `openedits tools [--json]` | Lists implemented and planned tools. |
 | `openedits doctor` | Checks ffmpeg, ffprobe, whisper.cpp and the Whisper model. |
 
-`--workspace DIR` (or `$OPENEDITS_WORKSPACE`) points the CLI at a different workspace. The default is `~/Movies/OpenEdits`.
+`--workspace DIR` (or `$OPENEDITS_WORKSPACE`) points the CLI at a different workspace. The default is `~/Movies/OpenEdits` on macOS and `~/Videos/OpenEdits` on Windows and Linux (an existing `~/Movies/OpenEdits` is kept).
 
 ## Conventions (enforced everywhere)
 
@@ -120,7 +120,7 @@ packages/mcp      Tool registry (defineTool), MCP server, HTTP/WebSocket server,
 
 ### Persistence
 
-Each project lives at `~/Movies/OpenEdits/projects/<id>/project.db`. The document autosaves on every commit, and the undo/redo stacks are persisted too, so undo still works after a restart.
+Each project lives at `<workspace>/projects/<id>/project.db`. The document autosaves on every commit, and the undo/redo stacks are persisted too, so undo still works after a restart.
 
 ### Live sharing
 
@@ -133,7 +133,7 @@ Each project lives at `~/Movies/OpenEdits/projects/<id>/project.db`. The documen
 - **Process model.** The Electron main process starts or joins `openedits serve` and opens one window. The window is a pure `/live` client: every button, slider and drag calls the same tool handlers agents use. better-sqlite3 is built for system Node, so the engine stays in its own Node process.
 - **Home.** A project grid with search, pinned and favorite filters, rename, delete, and a new project at any aspect. Also the inbox (one click makes a project), autopilot jobs, and the shortcut map picker.
 - **Editor.** Four panes:
-  - **Media dock:** import, drag and drop, filters, and audio from `brand/music` and `brand/sfx`; text presets and caption styles; filters, effects, transitions, LUTs and stickers.
+  - **Media dock:** import, drag and drop, filters, and audio from `brand/music` and `brand/sfx`; text presets and caption styles; filters, effects, transitions, LUTs and stickers. Every filter, effect, transition, adjust preset and LUT tile shows a preview drawn by the real compositor on built-in sample pictures; hovering a tile animates it (effects sweep in, transitions play, LUTs slide a log/Rec.709 divider).
   - **Viewport:** the WebGL compositor, the same one export uses. It has on-canvas move, scale and rotate handles, which preview live and commit one undo step on release, plus a 10% grid and the transport.
   - **Inspector:** the 42 tool panels filtered to the selected clip, with sliders that commit on release, keyframe diamonds at the playhead, curves, HSL, wheels, effects, captions and text-to-speech. With nothing selected it shows canvas, ripple, brief and transcript actions.
   - **Timeline:** ruler and beat markers, scrubbing, lock, mute and hide per track, move, reorder and trim with snapping, moves between the main track and overlays, waveforms, keyframes and transitions, and zoom with Ctrl or Cmd and the wheel.
@@ -163,7 +163,7 @@ Each project lives at `~/Movies/OpenEdits/projects/<id>/project.db`. The documen
 - `detectShots` and `detectCuts` find hard cuts and dissolves frame-accurately (twin-comparison on tiny frame signatures) and group shots by camera angle.
 - An Apple Vision helper (`packages/engine/native/vision.swift`, compiled by the build) runs on-device: `detectSubjects` (faces, people, salient regions), `autoReframe` (static or follow framing, or a stacked split screen when two speakers can't share a vertical frame), `trackObject`, `addStickerFromCutout`, and `applySubjectEffect` (background blur, subject glow, outline from per-frame masks).
 - `applyTextToSpeech` uses the system's voices (`ttsVoices`): macOS voices, Windows voices, or eSpeak NG on Linux.
-- Autopilot: videos dropped in `~/Movies/OpenEdits/auto-edit` become projects with the STYLE.md first pass and a final render in the outbox (`openedits autopilot`, `openedits serve --autopilot`, or once with `openedits auto-edit FILE`). Each job runs in its own engine, so it never touches the project you have open. `list_autopilot_jobs` reports them.
+- Autopilot: videos dropped in `<workspace>/auto-edit` become projects with the STYLE.md first pass and a final render in the outbox (`openedits autopilot`, `openedits serve --autopilot`, or once with `openedits auto-edit FILE`). Each job runs in its own engine, so it never touches the project you have open. `list_autopilot_jobs` reports them.
 
 ### Optional Claude features
 
