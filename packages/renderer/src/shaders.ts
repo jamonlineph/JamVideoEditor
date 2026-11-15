@@ -215,46 +215,178 @@ void main() {
   outColor = sum / total;
 }`;
 
-/** Single-pass effects. */
+/**
+ * Layer effects (one pass each; blur and glow add separable blur passes in the compositor).
+ * Texture row 0 is the top; colors are premultiplied. uParams carries each effect's parameters.
+ */
 export const EFFECT_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uTex;
-uniform int uType; // 1 vignette, 2 sharpen, 3 film_grain, 4 chromatic_aberration, 5 pixelate, 6 posterize, 7 mirror
-uniform float uAmount;
+uniform sampler2D uAux;   // second input (glow: the blurred bright pass)
+uniform int uType;
+uniform float uAmount;    // effect intensity 0..1
 uniform vec4 uParams;
 uniform vec2 uTexel;
-uniform float uTime;
+uniform float uTime;      // frame counter (grain)
+uniform float uSeconds;   // timeline seconds (animated effects)
 in vec2 vUv;
 out vec4 outColor;
 
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+const float TAU = 6.2831853;
+
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float noise1(float x) {
+  float i = floor(x);
+  float f = fract(x);
+  return mix(hash(vec2(i, 0.37)), hash(vec2(i + 1.0, 0.37)), f * f * (3.0 - 2.0 * f));
+}
+vec3 hueColor(float deg) {
+  vec3 k = mod(vec3(5.0, 3.0, 1.0) + deg / 60.0, 6.0);
+  return 1.0 - clamp(min(k, 4.0 - k), 0.0, 1.0);
+}
+vec3 unpremul(vec4 c) { return c.a > 1e-4 ? c.rgb / c.a : vec3(0.0); }
+// Width over height of the layer texture, and one "short side" in uv units on each axis.
+float aspect() { return uTexel.y / uTexel.x; }
+vec2 shortUv() { return uTexel / max(uTexel.x, uTexel.y); }
+vec4 sampleOr(vec2 uv, vec4 outside) {
+  return (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) ? outside : texture(uTex, uv);
+}
 
 void main() {
   vec4 c = texture(uTex, vUv);
-  if (uType == 1) {
+  if (uType == 1) {                                   // vignette: amount (pre-scaled), softness
     float d = distance(vUv, vec2(0.5)) * 1.41421;
     float soft = mix(0.2, 0.9, uParams.x);
     c.rgb *= 1.0 - uAmount * smoothstep(1.0 - soft, 1.0, d);
-  } else if (uType == 2) {
+  } else if (uType == 2) {                            // sharpen
     vec4 blur = (texture(uTex, vUv + vec2(uTexel.x, 0.0)) + texture(uTex, vUv - vec2(uTexel.x, 0.0)) +
                  texture(uTex, vUv + vec2(0.0, uTexel.y)) + texture(uTex, vUv - vec2(0.0, uTexel.y))) * 0.25;
     c.rgb = clamp(c.rgb + (c.rgb - blur.rgb) * uAmount * 2.0, 0.0, c.a);
-  } else if (uType == 3) {
+  } else if (uType == 3) {                            // film grain: size px
     float n = hash(floor(vUv / (uTexel * max(uParams.x, 1.0))) + uTime) - 0.5;
     c.rgb = clamp(c.rgb + n * uAmount * 0.35 * c.a, 0.0, c.a);
-  } else if (uType == 4) {
+  } else if (uType == 4) {                            // chromatic aberration: angle rad
     vec2 dir = vec2(cos(uParams.x), sin(uParams.x)) * uAmount * 0.02;
     c.r = texture(uTex, vUv + dir).r;
     c.b = texture(uTex, vUv - dir).b;
-  } else if (uType == 5) {
+  } else if (uType == 5) {                            // pixelate: cell px
     vec2 cell = uTexel * max(uParams.x, 1.0);
     c = texture(uTex, (floor(vUv / cell) + 0.5) * cell);
-  } else if (uType == 6) {
+  } else if (uType == 6) {                            // posterize: levels
     float levels = max(uParams.x, 2.0);
     if (c.a > 1e-4) c.rgb = floor(c.rgb / c.a * levels + 0.5) / levels * c.a;
-  } else if (uType == 7) {
+  } else if (uType == 7) {                            // mirror: axis (0 vertical seam, 1 horizontal)
     vec2 uv = uParams.x < 0.5 ? vec2(vUv.x > 0.5 ? 1.0 - vUv.x : vUv.x, vUv.y) : vec2(vUv.x, vUv.y > 0.5 ? 1.0 - vUv.y : vUv.y);
     c = texture(uTex, uv);
+  } else if (uType == 8) {                            // motion blur: angle rad, length 0..1
+    vec2 d = vec2(cos(uParams.x), sin(uParams.x)) * uParams.y * 0.06 * shortUv();
+    vec4 s = vec4(0.0);
+    for (int i = -8; i <= 8; i++) s += texture(uTex, vUv + d * float(i) / 8.0);
+    c = mix(c, s / 17.0, uAmount);
+  } else if (uType == 9) {                            // zoom blur: strength 0..1
+    vec2 d = (vUv - 0.5) * uParams.x * 0.3;
+    vec4 s = vec4(0.0);
+    for (int i = 0; i < 16; i++) s += texture(uTex, vUv - d * float(i) / 15.0);
+    c = mix(c, s / 16.0, uAmount);
+  } else if (uType == 10) {                           // tilt shift: focus line y, sharp band width
+    float f = smoothstep(uParams.y * 0.5, uParams.y * 0.5 + 0.25, abs(vUv.y - uParams.x));
+    vec2 r = f * 0.025 * shortUv();
+    vec4 s = c;
+    for (int i = 0; i < 24; i++) {
+      float a = float(i) * 2.39996;
+      float rr = sqrt((float(i) + 0.5) / 24.0);
+      s += texture(uTex, vUv + vec2(cos(a), sin(a)) * rr * r);
+    }
+    c = mix(c, s / 25.0, uAmount);
+  } else if (uType == 11) {                           // glow, step 1: keep what is brighter than the threshold
+    float l = dot(unpremul(c), LUMA);
+    c *= smoothstep(uParams.x, min(1.0, uParams.x + 0.25), l);
+  } else if (uType == 12) {                           // glow, step 2: add the blurred highlights
+    vec4 g = texture(uAux, vUv) * uAmount * 1.6;
+    float a = max(c.a, min(1.0, g.a));
+    c = vec4(min(c.rgb + g.rgb, vec3(a)), a);
+  } else if (uType == 13) {                           // light leak: hue deg, speed
+    float t = uSeconds * max(uParams.y, 0.05) * 0.35;
+    vec2 center = vec2(0.1 + 0.8 * noise1(t), 0.05 + 0.35 * noise1(t + 17.0));
+    float d = distance(vUv * vec2(aspect(), 1.0), center * vec2(aspect(), 1.0));
+    float leak = smoothstep(0.95, 0.0, d) * (0.55 + 0.45 * noise1(t * 1.7 + 5.0)) * uAmount;
+    vec3 tint = mix(hueColor(uParams.x), vec3(1.0, 0.9, 0.7), 0.25) * leak * c.a;
+    c.rgb = 1.0 - (1.0 - c.rgb) * (1.0 - tint);       // screen
+    c.rgb = min(c.rgb, vec3(c.a));
+  } else if (uType == 14) {                           // flash: Hz
+    float pulse = uParams.x > 0.0 ? pow(0.5 + 0.5 * cos(TAU * uParams.x * uSeconds), 12.0) : 0.0;
+    c.rgb = mix(c.rgb, vec3(c.a), pulse * uAmount);
+  } else if (uType == 15) {                           // VHS: tracking 0..1, noise 0..1
+    float frame = floor(uSeconds * 30.0);
+    float line = floor(vUv.y / uTexel.y);
+    float band = exp(-pow((fract(vUv.y + uSeconds * 0.18) - 0.5) * 18.0, 2.0));
+    float jitter = (hash(vec2(line * 0.013, frame)) - 0.5) * uParams.x * 0.006 + band * uParams.x * 0.03;
+    vec2 uv = vUv + vec2(jitter, 0.0);
+    vec4 base = texture(uTex, uv);
+    float ca = 0.003 + 0.004 * uParams.x;
+    vec3 col = vec3(texture(uTex, uv + vec2(ca, 0.0)).r, base.g, texture(uTex, uv - vec2(ca, 0.0)).b);
+    col *= 0.88 + 0.12 * sin(line * 3.14159 * 0.5);
+    col = mix(col, vec3(dot(col, LUMA)), 0.25);
+    col += (hash(vUv * 731.0 + frame) - 0.5) * uParams.y * 0.35 * base.a;
+    c = mix(c, vec4(clamp(col, 0.0, base.a), base.a), uAmount);
+  } else if (uType == 16) {                           // glitch: strength 0..1, speed
+    float t = floor(uSeconds * max(uParams.y, 0.1) * 4.0);
+    float burst = step(0.5, hash(vec2(t, 3.1)));
+    float rows = floor(vUv.y * (6.0 + 26.0 * hash(vec2(t, 7.0))));
+    float shift = (hash(vec2(rows, t)) - 0.5) * 0.25 * uParams.x * burst * step(0.55, hash(vec2(rows * 1.7, t + 1.0)));
+    vec2 uv = vec2(vUv.x + shift, vUv.y);
+    float ca = 0.02 * uParams.x * burst;
+    vec4 g = texture(uTex, uv);
+    g.r = texture(uTex, uv + vec2(ca, 0.0)).r;
+    g.b = texture(uTex, uv - vec2(ca, 0.0)).b;
+    c = mix(c, g, uAmount);
+  } else if (uType == 17) {                           // halftone: dot pitch px
+    float cell = max(uParams.x, 2.0);
+    mat2 rot = mat2(0.70711, 0.70711, -0.70711, 0.70711);
+    vec2 px = rot * (vUv / uTexel);
+    vec2 centerPx = (floor(px / cell) + 0.5) * cell;
+    vec4 s = texture(uTex, (transpose(rot) * centerPx) * uTexel);
+    float r = sqrt(clamp(1.0 - dot(unpremul(s), LUMA), 0.0, 1.0)) * cell * 0.7071;
+    float ink = 1.0 - smoothstep(r - 0.75, r + 0.75, distance(px, centerPx));
+    vec3 paper = vec3(0.97, 0.96, 0.93);
+    c = mix(c, vec4(mix(paper, vec3(0.05), ink) * c.a, c.a), uAmount);
+  } else if (uType == 18) {                           // kaleidoscope: segments
+    vec2 p = (vUv - 0.5) * vec2(aspect(), 1.0);
+    float seg = TAU / max(uParams.x, 2.0);
+    float a = mod(atan(p.y, p.x), seg);
+    a = abs(a - seg * 0.5);
+    vec2 q = vec2(cos(a), sin(a)) * length(p) / vec2(aspect(), 1.0);
+    c = mix(c, texture(uTex, q + 0.5), uAmount);
+  } else if (uType == 19) {                           // fisheye: strength 0..1 (edges stay put, the middle bulges)
+    vec2 p = (vUv * 2.0 - 1.0) * vec2(aspect(), 1.0) / max(aspect(), 1.0);
+    float r2 = dot(p, p);
+    float k = uParams.x * 0.65;
+    vec2 q = p * (1.0 - k + k * r2) * max(aspect(), 1.0) / vec2(aspect(), 1.0);
+    c = mix(c, sampleOr(q * 0.5 + 0.5, vec4(0.0)), uAmount);
+  } else if (uType == 20) {                           // camera shake: strength 0..1, Hz
+    float t = uSeconds * max(uParams.y, 0.1);
+    float s = uParams.x * uAmount;
+    vec2 off = vec2(noise1(t) - 0.5, noise1(t + 31.7) - 0.5) * s * 0.08;
+    float zoom = 1.0 + s * 0.09;
+    c = texture(uTex, (vUv - 0.5) / zoom + 0.5 + off / zoom);
+  } else if (uType == 21) {                           // zoom pulse: strength 0..1, Hz
+    float pulse = uParams.y > 0.0 ? pow(0.5 + 0.5 * cos(TAU * uParams.y * uSeconds), 4.0) : 0.0;
+    c = texture(uTex, (vUv - 0.5) / (1.0 + uParams.x * 0.3 * pulse * uAmount) + 0.5);
+  } else if (uType == 22) {                           // denoise: strength 0..1 (edge-preserving)
+    vec4 sum = vec4(0.0);
+    float wsum = 0.0;
+    float range = 0.01 + 0.09 * uParams.x;
+    for (int y = -2; y <= 2; y++) {
+      for (int x = -2; x <= 2; x++) {
+        vec4 s = texture(uTex, vUv + vec2(float(x), float(y)) * uTexel * 1.5);
+        vec3 d = s.rgb - c.rgb;
+        float w = exp(-float(x * x + y * y) / 4.5) * exp(-dot(d, d) / range);
+        sum += s * w;
+        wsum += w;
+      }
+    }
+    c = mix(c, sum / wsum, uAmount);
   }
   outColor = c;
 }`;
@@ -357,24 +489,70 @@ void main() {
     float r = e * length(vec2(uAspect, 1.0)) * 0.5;
     c = mix(b, a, smoothstep(-0.005, 0.005, d - r));
   }
+  else if (uType == 13) {                                                                                              // spin: turn and zoom out, then in
+    float ang = e * 6.2831853;
+    float zoom = 1.0 + sin(3.14159 * p) * 1.4;
+    vec2 q = (uv - 0.5) * vec2(uAspect, 1.0) * zoom;
+    q = vec2(q.x * cos(ang) - q.y * sin(ang), q.x * sin(ang) + q.y * cos(ang)) / vec2(uAspect, 1.0) + 0.5;
+    bool inside = q.x >= 0.0 && q.y >= 0.0 && q.x <= 1.0 && q.y <= 1.0;
+    vec4 from = inside ? texture(uFrom, q) : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 to = inside ? texture(uTo, q) : vec4(0.0, 0.0, 0.0, 1.0);
+    c = mix(from, to, smoothstep(0.4, 0.6, p));
+  }
+  else if (uType == 14) {                                                                                              // blur_dissolve
+    float r = sin(3.14159 * p) * 0.03;
+    vec4 sa = a;
+    vec4 sb = b;
+    for (int i = 0; i < 16; i++) {
+      float ang = float(i) * 2.39996;
+      vec2 o = vec2(cos(ang), sin(ang)) * sqrt((float(i) + 0.5) / 16.0) * r * vec2(1.0, uAspect);
+      sa += texture(uFrom, uv + o);
+      sb += texture(uTo, uv + o);
+    }
+    c = mix(sa, sb, e) / 17.0;
+  }
+  else if (uType == 15) {                                                                                              // glitch
+    float burst = sin(3.14159 * p);
+    float t = floor(p * 24.0);
+    float rows = floor(uv.y * (8.0 + 20.0 * fract(sin(t * 12.9898) * 43758.5453)));
+    float h = fract(sin(dot(vec2(rows, t), vec2(12.9898, 78.233))) * 43758.5453);
+    vec2 q = vec2(uv.x + (h - 0.5) * 0.3 * burst * step(0.5, h), uv.y);
+    float ca = 0.03 * burst;
+    vec4 from = vec4(texture(uFrom, q + vec2(ca, 0.0)).r, texture(uFrom, q).g, texture(uFrom, q - vec2(ca, 0.0)).b, 1.0);
+    vec4 to = vec4(texture(uTo, q + vec2(ca, 0.0)).r, texture(uTo, q).g, texture(uTo, q - vec2(ca, 0.0)).b, 1.0);
+    c = p < 0.5 ? from : to;
+  }
+  else if (uType == 16) {                                                                                              // whip_pan: fast push with motion blur
+    vec4 s = vec4(0.0);
+    float blur = sin(3.14159 * p) * 0.12;
+    for (int i = -6; i <= 6; i++) {
+      vec2 w = uv + vec2(float(i) / 6.0 * blur, 0.0);
+      s += w.x < 1.0 - e ? texture(uFrom, w + vec2(e, 0.0)) : texture(uTo, w - vec2(1.0 - e, 0.0));
+    }
+    c = s / 13.0;
+  }
+  else if (uType == 17) {                                                                                              // flash: cut under a white flash
+    float w = pow(1.0 - abs(2.0 * p - 1.0), 2.0);
+    c = mix(p < 0.5 ? a : b, vec4(1.0), w);
+  }
   else c = mix(a, b, p);
   outColor = c;
 }`;
 
 export const TRANSITION_TYPES: Record<string, number> = {
   dissolve: 0,
-  blur_dissolve: 0,
-  spin: 0,
-  glitch: 0,
+  blur_dissolve: 14,
+  spin: 13,
+  glitch: 15,
   fade_black: 1,
   fade_white: 2,
-  flash: 2,
+  flash: 17,
   slide_left: 3,
   slide_right: 4,
   slide_up: 5,
   slide_down: 6,
   push_left: 7,
-  whip_pan: 7,
+  whip_pan: 16,
   push_up: 8,
   zoom_in: 9,
   zoom_out: 10,
@@ -383,7 +561,7 @@ export const TRANSITION_TYPES: Record<string, number> = {
 };
 
 /** Transition ids drawn with their own shader (others fall back to a dissolve). */
-export const NATIVE_TRANSITIONS = ["dissolve", "fade_black", "fade_white", "slide_left", "slide_right", "slide_up", "slide_down", "push_left", "push_up", "zoom_in", "zoom_out", "wipe_left", "circle_reveal"];
+export const NATIVE_TRANSITIONS = Object.keys(TRANSITION_TYPES);
 
 export const BLEND_MODES: Record<string, number> = {
   normal: 0,
@@ -400,6 +578,7 @@ export const BLEND_MODES: Record<string, number> = {
   add: 11,
 };
 
+/** Effect ids drawn by EFFECT_FS (blur and glow also use the separable blur pass). */
 export const EFFECT_TYPES: Record<string, number> = {
   vignette: 1,
   sharpen: 2,
@@ -408,7 +587,24 @@ export const EFFECT_TYPES: Record<string, number> = {
   pixelate: 5,
   posterize: 6,
   mirror: 7,
+  motion_blur: 8,
+  zoom_blur: 9,
+  tilt_shift: 10,
+  glow: 11,
+  light_leak: 13,
+  flash: 14,
+  vhs: 15,
+  glitch: 16,
+  halftone: 17,
+  kaleidoscope: 18,
+  fisheye: 19,
+  shake: 20,
+  zoom_pulse: 21,
+  denoise: 22,
 };
+
+/** The second glow pass (adds the blurred highlights back). */
+export const GLOW_ADD = 12;
 
 /** Effects the compositor can draw today (blur is separable, the rest single-pass). */
 export const SUPPORTED_EFFECTS = ["blur", ...Object.keys(EFFECT_TYPES)];

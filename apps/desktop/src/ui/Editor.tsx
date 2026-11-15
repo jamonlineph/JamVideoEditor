@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { compositionDuration, mainTrack, clipBoundaries } from "@openedits/core";
-import { live, selectedElements, useLive } from "./live.js";
+import { FILE_MANAGER, live, selectedElements, useLive } from "./live.js";
 import { ui, useUi } from "./uiStore.js";
-import { Dock } from "./Dock.js";
+import { Dock, importFiles } from "./Dock.js";
 import { Viewport, type ViewportApi } from "./Viewport.js";
 import { Inspector } from "./Inspector.js";
 import { Timeline } from "./Timeline.js";
@@ -111,11 +111,15 @@ export function Editor() {
     const onMenu = (e: Event) => {
       const a = (e as CustomEvent<string>).detail;
       if (a === "export") ui.set({ exportOpen: true });
+      if (a === "import") void importFiles();
     };
     window.addEventListener("menu", onMenu);
+    const onSeek = (e: Event) => viewport.current?.player?.seek((e as CustomEvent<number>).detail);
+    window.addEventListener("openedits-seek", onSeek);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("menu", onMenu);
+      window.removeEventListener("openedits-seek", onSeek);
     };
   }, [shortcutMap]);
 
@@ -243,7 +247,7 @@ function ExportDialog({ onClose }: { onClose: () => void }) {
           </>
         )}
         <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
-          {job?.status === "done" && <button onClick={() => void import("electron").then(({ ipcRenderer }) => ipcRenderer.invoke("reveal", job.output!.path))}>Show in Finder</button>}
+          {job?.status === "done" && <button onClick={() => void import("electron").then(({ ipcRenderer }) => ipcRenderer.invoke("reveal", job.output!.path))}>Show in {FILE_MANAGER}</button>}
           <button onClick={onClose}>Close</button>
           <button className="primary" disabled={job?.status === "running"} onClick={async () => setJob((await live.run<typeof job>("export", {})) ?? null)}>
             {job?.status === "running" ? "Exporting…" : "Export"}

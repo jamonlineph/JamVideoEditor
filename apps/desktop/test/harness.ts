@@ -30,7 +30,9 @@ export class AppHarness {
   static async launch(workspace: string): Promise<AppHarness> {
     // The real Electron binary (not the node wrapper in .bin) so the IPC channel reaches the app.
     const electron = createRequire(path.join(ROOT, "package.json"))("electron") as string;
-    const child = spawn(electron, [path.join(ROOT, "apps/desktop")], {
+    // Chromium refuses to start as root with its sandbox on (containers, CI).
+    const flags = process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [];
+    const child = spawn(electron, [path.join(ROOT, "apps/desktop"), ...flags], {
       env: { ...process.env, OPENEDITS_UI_TEST: "1", OPENEDITS_WORKSPACE: workspace, ELECTRON_RUN_AS_NODE: undefined },
       stdio: ["ignore", "ignore", "inherit", "ipc"],
     });

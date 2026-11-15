@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
-import type { MediaLayer, MediaRenderInfo as MediaInfo, RenderContext } from "@openedits/core";
+import { builtinLut, type MediaLayer, type MediaRenderInfo as MediaInfo, type RenderContext } from "@openedits/core";
 import { parseCube, type Compositor, type LutTexture, type SceneResources, type TextureInfo } from "@openedits/renderer";
 
 export const even = (n: number) => Math.max(16, Math.round(n / 2) * 2);
@@ -27,7 +27,8 @@ export class VideoReader {
   private start(index: number) {
     this.stop();
     const args = ["-v", "error", "-nostdin"];
-    if (this.ctx.hwaccel !== false) args.push("-hwaccel", "videotoolbox");
+    // VideoToolbox only exists on macOS; other platforms decode in software (naming it there makes ffmpeg fail).
+    if (this.ctx.hwaccel !== false && process.platform === "darwin") args.push("-hwaccel", "videotoolbox");
     // Seek half a frame early so the first decoded frame is exactly `index`.
     if (index > 0) args.push("-ss", ((index - 0.5) / this.info.fps).toFixed(6));
     const scale = `scale=${this.width}:${this.height}:flags=bilinear${this.info.inColorMatrix ? `:in_color_matrix=${this.info.inColorMatrix}` : ""}`;
@@ -290,6 +291,10 @@ export class MediaManager implements SceneResources {
     if (file && fs.existsSync(file)) {
       const cube = parseCube(fs.readFileSync(file, "utf8"));
       result = this.compositor.createLut(cube.data, cube.size);
+    } else if (!ref.cubePath) {
+      // Camera LUTs are generated from the log curves, not read from files.
+      const generated = builtinLut(ref.id);
+      if (generated) result = this.compositor.createLut(generated.data, generated.size);
     }
     this.luts.set(key, result);
     return result;

@@ -26,7 +26,7 @@ import {
   type MediaAsset,
   type VideoElement,
 } from "@openedits/core";
-import { describeClip, detectBoundaries, frameSignatures, listVoices, locateObject, runFfmpeg, shotsFrom, synthesize, transcriptText, twoSpeakerSplit, type Box, type JobInfo, type SubjectFrame } from "@openedits/engine";
+import { describeClip, detectBoundaries, visionHelperPath, frameSignatures, listVoices, locateObject, runFfmpeg, shotsFrom, synthesize, transcriptText, twoSpeakerSplit, type Box, type JobInfo, type SubjectFrame } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
 import { expectedVersion, hexColor, mutate, round, transformInput } from "./common.js";
 
@@ -117,13 +117,13 @@ export const visionTools = [
     name: "applyTextToSpeech",
     title: "Text to speech",
     category: "text",
-    description: "Speak a text element (or `text`) with a macOS voice and place it as a voiceover clip at the text's start (or `start`), in one undo step. With a text element, its duration is extended to cover the speech when needed. Lists the installed voices if `voice` is unknown.",
+    description: "Speak a text element (or `text`) with a system voice (macOS, Windows or eSpeak NG on Linux) and place it as a voiceover clip at the text's start (or `start`), in one undo step. With a text element, its duration is extended to cover the speech when needed. Lists the installed voices if `voice` is unknown.",
     input: z.object({
       elementId: z.string().optional(),
       text: z.string().max(5000).optional(),
       start: z.number().min(0).optional(),
       voice: z.string().optional(),
-      rate: z.number().min(80).max(400).optional().describe("Words per minute (macOS default about 175)"),
+      rate: z.number().min(80).max(400).optional().describe("Words per minute (default about 175)"),
       expectedVersion,
     }),
     handler: async (a, ctx) => {
@@ -154,7 +154,7 @@ export const visionTools = [
     name: "ttsVoices",
     title: "TTS voices",
     category: "text",
-    description: "Voices installed on this Mac for applyTextToSpeech, optionally filtered by locale prefix (e.g. en, es_ES).",
+    description: "Voices installed on this computer for applyTextToSpeech, optionally filtered by locale prefix (e.g. en, es_ES).",
     input: z.object({ locale: z.string().optional() }),
     readOnly: true,
     handler: async (a) => {
@@ -357,6 +357,7 @@ export const visionTools = [
       const host = ctx.host;
       const el = requireElement(host.project, a.elementId);
       if (el.type !== "video") throw new EditError("INVALID_ELEMENT_TYPE", `${el.id} is a ${el.type}; subject effects need a video clip`);
+      visionHelperPath(); // fail now, not in the background job, when subject masks cannot be computed here
       const kind = a.kind ?? "person";
       const job = host.jobs.start("subject_effect", async (j) => {
         const mask = await host.vision.subjectMask(host.project.elements[el.id] as VideoElement, kind, j);

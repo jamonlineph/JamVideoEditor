@@ -271,7 +271,7 @@ export const timelineTools = [
     name: "addTransition",
     title: "Add transition",
     category: "timeline",
-    description: "Add/replace the transition at the cut after a main-track clip. Centered on the cut; clamped to available media handles. type \"none\" removes it.",
+    description: "Add/replace the transition at the cut after a main-track clip. Centered on the cut and never longer than the shorter clip; where a clip has no spare footage past the cut its edge frame is held. type \"none\" removes it.",
     input: z.object({ fromElementId: z.string(), type: z.string(), durationSeconds: z.number().positive().max(5).optional(), expectedVersion }),
     handler: (a, ctx) => {
       const item = findCatalogItem("transitions", a.type);

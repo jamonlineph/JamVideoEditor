@@ -165,3 +165,37 @@ export const FONTS: CatalogItem<{ family: string; weights: number[]; builtIn: bo
   category: category as string,
   data: { family: family as string, weights: weights as number[], builtIn: true },
 }));
+
+/** Look-alike fonts that ship with Windows and common Linux desktops, per catalog font. */
+const FONT_FALLBACKS: Record<string, string[]> = {
+  "Helvetica Neue": ["Helvetica", "Arial", "Liberation Sans", "Arimo"],
+  "Avenir Next": ["Avenir", "Segoe UI", "Nunito Sans", "Century Gothic"],
+  Futura: ["Futura PT", "Century Gothic", "Jost", "Trebuchet MS"],
+  "SF Pro Display": ["-apple-system", "Segoe UI", "Inter", "Roboto"],
+  Impact: ["Haettenschweiler", "Anton", "Arial Black", "Oswald"],
+  Georgia: ["Times New Roman", "Liberation Serif", "Tinos", "DejaVu Serif"],
+  Didot: ["Bodoni 72", "Bodoni MT", "Playfair Display", "Georgia", "Times New Roman"],
+  Baskerville: ["Baskerville Old Face", "Libre Baskerville", "Georgia", "Times New Roman"],
+  "American Typewriter": ["Courier Prime", "Courier New", "Liberation Mono"],
+  "Courier New": ["Courier", "Liberation Mono", "Cousine", "Nimbus Mono PS"],
+  Menlo: ["Consolas", "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono"],
+  "Marker Felt": ["Comic Sans MS", "Segoe Print", "Comic Neue"],
+  "Bradley Hand": ["Segoe Script", "Bradley Hand ITC", "Dancing Script"],
+  "Chalkboard SE": ["Comic Sans MS", "Segoe Print", "Comic Neue"],
+  Noteworthy: ["Segoe Print", "Comic Sans MS", "Comic Neue"],
+  Rockwell: ["Rockwell Nova", "Roboto Slab", "Zilla Slab", "Georgia"],
+};
+
+const GENERIC: Record<string, string> = { sans: "sans-serif", display: "sans-serif", serif: "serif", mono: "monospace", slab: "serif", handwritten: "cursive" };
+
+/**
+ * A CSS font-family list for a font name: the font itself, then similar fonts that ship with
+ * Windows and Linux, then a generic family of the same kind (so a serif stays a serif).
+ */
+export function fontStack(family: string | undefined): string {
+  if (!family) family = "Helvetica Neue";
+  const item = FONTS.find((f) => f.data.family === family);
+  const quote = (f: string) => (f.startsWith("-") ? f : `"${f.replace(/"/g, "")}"`);
+  const fallbacks = FONT_FALLBACKS[family] ?? ["Helvetica Neue", "Arial", "Segoe UI", "Liberation Sans"];
+  return [family, ...fallbacks].map(quote).join(", ") + `, ${GENERIC[item?.category ?? "sans"] ?? "sans-serif"}`;
+}

@@ -20,6 +20,7 @@ import {
 import { Library, type ProjectFilter, type ProjectRow, type ProjectSort } from "./library.js";
 import { ProjectStore, type RevisionInfo } from "./projectStore.js";
 import { acquireLock } from "./lock.js";
+import { expandHome } from "./ffmpeg.js";
 import { createFfprobe, type Prober } from "./media/probe.js";
 import { listMediaFolder } from "./inbox.js";
 import { JobManager } from "./jobs.js";
@@ -407,7 +408,7 @@ export class EngineHost extends EventEmitter {
   async importMedia(paths: string[], opts: { folderId?: string; source?: string } = {}): Promise<{ assets: MediaAsset[]; added: string[]; existing: string[] }> {
     this.requireOpen();
     if (paths.length === 0) throw new EditError("INVALID_ARGUMENT", "No paths given");
-    const resolved = paths.map((p) => path.resolve(p.replace(/^~(?=$|\/)/, process.env.HOME ?? "~")));
+    const resolved = paths.map((p) => path.resolve(expandHome(p)));
     const byPath = new Map(Object.values(this.project.media).map((m) => [m.path, m]));
     const assets: MediaAsset[] = [];
     const toAdd: MediaAsset[] = [];

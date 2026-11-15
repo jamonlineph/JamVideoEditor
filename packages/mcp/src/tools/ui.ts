@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { EditError } from "@openedits/core";
-import { decodePcm, renderAudioMix, writeWav } from "@openedits/engine";
+import { decodePcm, renderAudioMix, speechAvailable, visionAvailable, whisperAvailable, writeWav } from "@openedits/engine";
 import { defineTool } from "../defineTool.js";
 import { round } from "./common.js";
 
@@ -89,12 +89,17 @@ export const voiceoverTools = [
     name: "getSettings",
     title: "Get settings",
     category: "project",
-    description: "App settings: shortcut map, default caption style, silence and padding defaults, Whisper language, Claude opt-in.",
+    description: "App settings: shortcut map, default caption style, silence and padding defaults, Whisper language, Claude opt-in, and which optional features this computer supports (features: transcription, speech, vision).",
     input: z.object({}),
     readOnly: true,
-    handler: (_a, ctx) => {
+    handler: async (_a, ctx) => {
       const s = ctx.host.settings;
-      return { shortcutMap: s.shortcutMap, defaultCaptionStyle: s.defaultCaptionStyle, minSilenceSeconds: s.minSilenceSeconds, cutPaddingSeconds: s.cutPaddingSeconds, language: s.language, claudeEnabled: ctx.host.ai.unavailableReason() === null };
+      const features = {
+        transcription: (await whisperAvailable()) && fs.existsSync(s.whisperModelPath),
+        speech: await speechAvailable(),
+        vision: visionAvailable(),
+      };
+      return { shortcutMap: s.shortcutMap, defaultCaptionStyle: s.defaultCaptionStyle, minSilenceSeconds: s.minSilenceSeconds, cutPaddingSeconds: s.cutPaddingSeconds, language: s.language, claudeEnabled: ctx.host.ai.unavailableReason() === null, workspace: ctx.host.paths.root, features };
     },
   }),
   defineTool({

@@ -28,6 +28,14 @@ export const ui = {
   },
 };
 
+/**
+ * Move the playhead from anywhere in the UI: the viewport redraws and the engine (and agents) hear
+ * about it. The editor routes this to the player.
+ */
+export function seek(seconds: number) {
+  window.dispatchEvent(new CustomEvent("openedits-seek", { detail: seconds }));
+}
+
 export function useUi(): UiState {
   return useSyncExternalStore(ui.subscribe, ui.get);
 }

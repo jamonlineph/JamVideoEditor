@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILTIN_LUT_IDS,
+  LUTS_CATALOG,
+  builtinLut,
+  logEncoder,
   addAdjustmentLayer,
   addMediaToTimeline,
   addText,
@@ -163,5 +167,71 @@ describe("audio plan", () => {
     });
     plan = buildAudioPlan(s.state);
     expect(plan.map((c) => c.role).sort()).toEqual(["extracted", "music"]);
+  });
+});
+
+describe("built-in camera LUTs", () => {
+  // Each vendor's 18% grey as a decoded (video-range) pixel value; a good Rec.709 conversion shows it near 0.43.
+  const videoRange = (fullCode: number) => (fullCode * 1023 - 64) / 876;
+  const MID_GREY: Record<string, number> = {
+    apple_log_to_rec709: 0.488,
+    sony_slog2_sgamut3_to_rec709: 0.308,
+    sony_slog3_sgamut3_to_rec709: videoRange(420 / 1023),
+    canon_clog_to_rec709: 0.328,
+    canon_clog3_to_rec709: 0.328,
+    dji_dlog_to_rec709: 0.3988,
+    fuji_flog_to_rec709: videoRange(470 / 1023),
+    fuji_flog2_to_rec709: videoRange(400 / 1023),
+    panasonic_vlog_to_rec709: videoRange(433 / 1023),
+  };
+
+  it("generates every catalog camera LUT with black at 0, grey near 0.43 and a monotone curve", () => {
+    const catalog = LUTS_CATALOG.map((l) => l.id).filter((id) => id !== "custom");
+    expect(BUILTIN_LUT_IDS.sort()).toEqual([...catalog].sort());
+    for (const id of catalog) {
+      const lut = builtinLut(id, 33)!;
+      expect(lut.data.length).toBe(33 ** 3 * 3);
+      const grey = (v: number) => {
+        const i = Math.round(v * 32);
+        return lut.data[((i * 33 + i) * 33 + i) * 3];
+      };
+      expect(grey(0), id).toBeLessThan(0.02);
+      for (let i = 1; i <= 32; i++) expect(grey(i / 32), `${id} at ${i}`).toBeGreaterThanOrEqual(grey((i - 1) / 32) - 1e-6);
+      expect(grey(1), `${id} white`).toBeGreaterThan(0.9);
+      if (MID_GREY[id]) {
+        expect(grey(MID_GREY[id]), id).toBeGreaterThan(0.38);
+        expect(grey(MID_GREY[id]), id).toBeLessThan(0.5);
+      }
+    }
+    expect(builtinLut("nope")).toBeNull();
+  });
+});
+
+describe("log encoding for LUT previews", () => {
+  it("is undone by the matching LUT (round trip within a few percent)", () => {
+    for (const id of BUILTIN_LUT_IDS) {
+      const encode = logEncoder(id)!;
+      const lut = builtinLut(id, 65)!;
+      const n = lut.size;
+      // Trilinear lookup, as the GPU does it.
+      const apply = ([r, g, b]: number[]) => {
+        const p = [r, g, b].map((v) => Math.min(n - 1 - 1e-6, Math.max(0, v * (n - 1))));
+        const i = p.map(Math.floor);
+        const f = p.map((v, k) => v - i[k]);
+        const out = [0, 0, 0];
+        for (let dz = 0; dz < 2; dz++)
+          for (let dy = 0; dy < 2; dy++)
+            for (let dx = 0; dx < 2; dx++) {
+              const w = (dx ? f[0] : 1 - f[0]) * (dy ? f[1] : 1 - f[1]) * (dz ? f[2] : 1 - f[2]);
+              const o = (((i[2] + dz) * n + (i[1] + dy)) * n + (i[0] + dx)) * 3;
+              for (let c = 0; c < 3; c++) out[c] += w * lut.data[o + c];
+            }
+        return out;
+      };
+      for (const rgb of [[0.5, 0.5, 0.5], [0.8, 0.4, 0.2], [0.2, 0.5, 0.7], [0.9, 0.9, 0.6]] as [number, number, number][]) {
+        const back = apply(encode(rgb));
+        for (let c = 0; c < 3; c++) expect(Math.abs(back[c] - rgb[c]), `${id} ${rgb}`).toBeLessThan(0.04);
+      }
+    }
   });
 });

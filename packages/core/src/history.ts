@@ -1,4 +1,4 @@
-import { applyPatches, enablePatches, produceWithPatches, type Patch } from "immer";
+import { applyPatches, current, enablePatches, isDraft, produceWithPatches, type Patch } from "immer";
 import type { Project } from "./schema.js";
 import { EditError } from "./errors.js";
 import { randomIds, type IdGenerator } from "./ids.js";
@@ -80,6 +80,15 @@ function changeSetFrom(patches: Patch[], before: Project, after: Project): Chang
     }
   }
   return { elementIds: [...elementIds], trackIds: [...trackIds] };
+}
+
+/** Plain copies of any drafts in a recipe's return value, so it stays readable after the transaction. */
+function detach<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  if (isDraft(value)) return current(value as never) as T;
+  if (Array.isArray(value)) return value.map(detach) as T;
+  if (Object.getPrototypeOf(value) === Object.prototype) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, detach(v)])) as T;
+  return value;
 }
 
 /**
@@ -165,6 +174,8 @@ export class Session {
       const snap = snapshotMain(draft);
       result = recipe(ctx);
       if (!opts.skipFinalize) finalize(ctx, snap);
+      // Recipes often return a piece of the draft; drafts are revoked when the transaction ends.
+      result = detach(result);
     });
     const ctx = ctxRef!;
     if (patches.length === 0) {

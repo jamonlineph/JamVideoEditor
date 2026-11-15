@@ -19,9 +19,22 @@ export interface Detection {
   confidence: number;
 }
 
+export const VISION_UNAVAILABLE =
+  "Subject detection (auto reframe, cutouts, object tracking and subject effects) uses Apple's Vision framework, which is only available on macOS.";
+
+/** Whether subject detection can run on this computer. */
+export function visionAvailable(): boolean {
+  try {
+    return !!visionHelperPath();
+  } catch {
+    return false;
+  }
+}
+
 /** The compiled Apple Vision helper (built from packages/engine/native/vision.swift). */
 export function visionHelperPath(): string {
   if (process.env.OPENEDITS_VISION) return process.env.OPENEDITS_VISION;
+  if (process.platform !== "darwin") throw new EditError("NOT_IMPLEMENTED", VISION_UNAVAILABLE);
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const candidate of [path.resolve(here, "../../bin/openedits-vision"), path.resolve(here, "../bin/openedits-vision")]) {
     if (fs.existsSync(candidate)) return candidate;
@@ -31,8 +44,9 @@ export function visionHelperPath(): string {
 
 async function run<T>(command: string, file: string, options: Record<string, string>, signal?: AbortSignal): Promise<T> {
   const args = [command, file, ...Object.entries(options).flatMap(([k, v]) => [`--${k}`, v])];
+  const helper = visionHelperPath();
   try {
-    const { stdout } = await execFileAsync(visionHelperPath(), args, { maxBuffer: 64 * 1024 * 1024, signal });
+    const { stdout } = await execFileAsync(helper, args, { maxBuffer: 64 * 1024 * 1024, signal });
     return JSON.parse(stdout) as T;
   } catch (e) {
     if (signal?.aborted) throw new EditError("INTERNAL", "Cancelled");

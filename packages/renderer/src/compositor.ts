@@ -8,6 +8,7 @@ import {
   EFFECT_FS,
   EFFECT_TYPES,
   FULLSCREEN_VS,
+  GLOW_ADD,
   LAYER_FS,
   LAYER_VS,
   SUBJECT_FS,
@@ -418,37 +419,77 @@ export class Compositor {
     return out;
   }
 
-  private effectPass(src: TextureInfo, fx: EffectInstance, time: number): Target | null {
+  /** One EFFECT_FS pass over `src`. */
+  private runEffect(src: TextureInfo, type: number, params: [number, number, number, number], amount: number, time: number, aux?: TextureInfo): Target {
     const gl = this.gl;
+    const out = this.acquire(src.width, src.height);
+    this.pass(this.programs.effect, out, (p) => {
+      this.bind(0, src.tex);
+      gl.uniform1i(p.loc("uTex"), 0);
+      this.bind(1, (aux ?? src).tex);
+      gl.uniform1i(p.loc("uAux"), 1);
+      gl.uniform1i(p.loc("uType"), type);
+      gl.uniform1f(p.loc("uAmount"), amount);
+      gl.uniform4f(p.loc("uParams"), ...params);
+      gl.uniform2f(p.loc("uTexel"), 1 / src.width, 1 / src.height);
+      gl.uniform1f(p.loc("uTime"), Math.floor(time * 30) % 997);
+      gl.uniform1f(p.loc("uSeconds"), time);
+    });
+    return out;
+  }
+
+  private effectPass(src: TextureInfo, fx: EffectInstance, time: number): Target | null {
     const amount = fx.intensity / 100;
     const num = (name: string, fallback: number) => (typeof fx.params[name] === "number" ? (fx.params[name] as number) : fallback);
     if (amount <= 0) return null;
-    if (fx.effectId === "blur") return this.blurTexture(src, amount * (num("radius", 50) / 50) * 0.04 * Math.min(src.width, src.height));
+    const short = Math.min(src.width, src.height);
+    if (fx.effectId === "blur") return this.blurTexture(src, amount * (num("radius", 50) / 50) * 0.04 * short);
     const type = EFFECT_TYPES[fx.effectId];
     if (!type) {
       this.warnings.add(`Effect "${fx.effectId}" is not rendered yet; it was skipped`);
       return null;
     }
-    const scale = Math.min(src.width, src.height) / 1080;
-    const params: [number, number, number, number] =
-      fx.effectId === "vignette" ? [num("softness", 60) / 100, 0, 0, 0]
-      : fx.effectId === "film_grain" ? [num("size", 1.5) * scale, 0, 0, 0]
-      : fx.effectId === "chromatic_aberration" ? [(num("angle", 0) * Math.PI) / 180, 0, 0, 0]
-      : fx.effectId === "pixelate" ? [Math.max(1, num("size", 20) * scale), 0, 0, 0]
-      : fx.effectId === "posterize" ? [num("levels", 6), 0, 0, 0]
-      : fx.effectId === "mirror" ? [num("axis", 0), 0, 0, 0]
-      : [0, 0, 0, 0];
-    const out = this.acquire(src.width, src.height);
-    this.pass(this.programs.effect, out, (p) => {
-      this.bind(0, src.tex);
-      gl.uniform1i(p.loc("uTex"), 0);
-      gl.uniform1i(p.loc("uType"), type);
-      gl.uniform1f(p.loc("uAmount"), fx.effectId === "vignette" ? amount * (num("amount", 40) / 40) * 0.6 : amount);
-      gl.uniform4f(p.loc("uParams"), ...params);
-      gl.uniform2f(p.loc("uTexel"), 1 / src.width, 1 / src.height);
-      gl.uniform1f(p.loc("uTime"), Math.floor(time * 30) % 997);
-    });
-    return out;
+    if (fx.effectId === "glow") {
+      // Bright pass, blurred, added back over the layer.
+      const bright = this.runEffect(src, type, [num("threshold", 70) / 100, 0, 0, 0], 1, time);
+      const blurred = this.blurTexture(bright, Math.max(1, (num("radius", 30) / 100) * 0.08 * short));
+      if (blurred) this.release(bright);
+      const glow = blurred ?? bright;
+      const out = this.runEffect(src, GLOW_ADD, [0, 0, 0, 0], amount, time, glow);
+      this.release(glow);
+      return out;
+    }
+    const scale = short / 1080;
+    const pct = (name: string, fallback: number) => num(name, fallback) / 100;
+    const rad = (name: string, fallback: number) => (num(name, fallback) * Math.PI) / 180;
+    const params: Record<string, [number, number, number, number]> = {
+      vignette: [pct("softness", 60), 0, 0, 0],
+      film_grain: [num("size", 1.5) * scale, 0, 0, 0],
+      chromatic_aberration: [rad("angle", 0), 0, 0, 0],
+      pixelate: [Math.max(1, num("size", 20) * scale), 0, 0, 0],
+      posterize: [num("levels", 6), 0, 0, 0],
+      mirror: [num("axis", 0), 0, 0, 0],
+      motion_blur: [rad("angle", 0), pct("amount", 30), 0, 0],
+      zoom_blur: [pct("amount", 30), 0, 0, 0],
+      tilt_shift: [num("focus", 0.5), num("width", 0.3), 0, 0],
+      light_leak: [num("hue", 30), num("speed", 1), 0, 0],
+      flash: [num("frequency", 2), 0, 0, 0],
+      vhs: [pct("tracking", 30), pct("noise", 20), 0, 0],
+      glitch: [pct("amount", 40), num("speed", 3), 0, 0],
+      halftone: [Math.max(2, num("dotSize", 8) * scale), 0, 0, 0],
+      kaleidoscope: [num("segments", 6), 0, 0, 0],
+      fisheye: [pct("amount", 40), 0, 0, 0],
+      shake: [pct("amount", 30), num("frequency", 8), 0, 0],
+      zoom_pulse: [pct("amount", 15), num("frequency", 2), 0, 0],
+      denoise: [pct("amount", 40), 0, 0, 0],
+    };
+    // Effects with an "amount" parameter scale their strength by it (the catalog default gives 1x).
+    const AMOUNT_DEFAULTS: Record<string, number> = { film_grain: 25, sharpen: 40, chromatic_aberration: 20 };
+    const strength =
+      fx.effectId === "vignette" ? amount * (num("amount", 40) / 40) * 0.6
+      : fx.effectId in AMOUNT_DEFAULTS ? amount * (num("amount", AMOUNT_DEFAULTS[fx.effectId]) / AMOUNT_DEFAULTS[fx.effectId])
+      : amount;
+    return this.runEffect(src, type, params[fx.effectId] ?? [0, 0, 0, 0], strength, time);
   }
 
   /** Runs color and effect passes over a source texture. Returns the result and the targets to release afterwards. */

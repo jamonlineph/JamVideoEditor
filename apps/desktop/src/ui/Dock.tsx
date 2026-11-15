@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import fs from "node:fs";
 import path from "node:path";
-import { ipcRenderer } from "electron";
-import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, mainTrack, type MediaAsset } from "@openedits/core";
-import { live, selectedElements, useLive, WORKSPACE } from "./live.js";
+import { ipcRenderer, webUtils } from "electron";
+import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, fontStack, mainTrack, type MediaAsset } from "@openedits/core";
+import { fileUrl, live, selectedElements, useFeatures, useLive, WORKSPACE } from "./live.js";
 import { ui, useUi } from "./uiStore.js";
+import { PreviewTile } from "./PreviewTile.js";
 
 const KIND_ICON: Record<string, string> = { video: "🎬", audio: "🎵", image: "🖼" };
 const KIND_COLOR: Record<string, string> = { video: "var(--video)", audio: "var(--audio)", image: "var(--image)" };
@@ -15,9 +16,23 @@ function fmt(sec?: number) {
   return `${m}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
 }
 
-async function importFiles(paths?: string[]) {
+/** Import files into the media panel (asks with the file picker when no paths are given). */
+export async function importFiles(paths?: string[]) {
   const files = paths ?? ((await ipcRenderer.invoke("pick-files", {})) as string[]);
   if (files.length) await live.run("importToMediaPanel", { paths: files });
+}
+
+/** Paths of files dropped from the desktop (Electron no longer puts them on File objects). */
+export function droppedPaths(e: React.DragEvent): string[] {
+  return [...e.dataTransfer.files]
+    .map((f) => {
+      try {
+        return webUtils.getPathForFile(f);
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean);
 }
 
 export function Dock() {
@@ -57,7 +72,7 @@ function MediaTab() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
-        const files = [...e.dataTransfer.files].map((f) => (f as File & { path?: string }).path ?? "").filter(Boolean);
+        const files = droppedPaths(e);
         if (files.length) void importFiles(files);
       }}
       style={{ minHeight: "100%" }}
@@ -145,7 +160,7 @@ function AudioTab() {
       setPlaying(null);
       return;
     }
-    audio.current.src = `file://${file}`;
+    audio.current.src = fileUrl(file);
     void audio.current.play();
     setPlaying(file);
   };
@@ -158,7 +173,7 @@ function AudioTab() {
         <div key={group}>
           <div className="section-title">{group}</div>
           {library.filter((l) => l.group === group && (!query || l.name.toLowerCase().includes(query.toLowerCase()))).length === 0 && (
-            <div className="muted small">Add files to ~/Movies/OpenEdits/brand/{group === "Music" ? "music" : "sfx"}.</div>
+            <div className="muted small">Add files to {path.join(WORKSPACE, "brand", group === "Music" ? "music" : "sfx")}.</div>
           )}
           {library
             .filter((l) => l.group === group && (!query || l.name.toLowerCase().includes(query.toLowerCase())))
@@ -207,6 +222,7 @@ function AudioTab() {
 
 function TextTab() {
   const s = useLive();
+  const features = useFeatures();
   const add = (presetId: string, text = "Your text") => void live.run("addText", { text, start: ui.get().playhead, duration: 3, presetId });
   const hasMain = mainTrack(s.project!).elementIds.length > 0;
   return (
@@ -221,7 +237,7 @@ function TextTab() {
             <div key={p.id} className="tile" onClick={() => add(p.id)} title={`Add "${p.name}" text at the playhead`}>
               <span
                 style={{
-                  fontFamily: st.fontFamily,
+                  fontFamily: fontStack(st.fontFamily),
                   fontWeight: st.fontWeight,
                   fontStyle: st.italic ? "italic" : undefined,
                   color: st.color ?? "#fff",
@@ -244,12 +260,26 @@ function TextTab() {
       </div>
       <div className="section-title">Captions</div>
       <div className="muted small" style={{ marginBottom: 6 }}>
-        {hasMain ? "Transcribes the main track (on-device) and adds captions in this style." : "Add a talking clip first."}
+        {features && !features.transcription
+          ? "Captions need whisper.cpp (whisper-cli) and a Whisper model, which are not installed on this computer. See the README for setup."
+          : hasMain
+            ? "Transcribes the main track (on-device) and adds captions in this style."
+            : "Add a talking clip first."}
       </div>
       <div className="tiles">
         {CAPTION_STYLES.map((c) => (
-          <div key={c.id} className="tile" onClick={() => hasMain && void live.run("generateCaptions", { style: c.id })} title={`Captions: ${c.name} (${c.data.mode})`}>
-            <span style={{ fontFamily: c.data.style.fontFamily, fontWeight: c.data.style.fontWeight, textTransform: c.data.style.uppercase ? "uppercase" : undefined, fontSize: 13 }}>
+          <div
+            key={c.id}
+            className="tile"
+            onClick={() => {
+              if (features && !features.transcription) return live.toast("info", "Captions need whisper.cpp (whisper-cli) and a Whisper model. Run `openedits doctor` for setup steps.");
+              if (!hasMain) return live.toast("info", "Add a talking clip to the main track first");
+              live.toast("info", "Transcribing and adding captions…");
+              void live.run("generateCaptions", { style: c.id }).then((r) => r && live.toast("info", "Captions added"));
+            }}
+            title={`Captions: ${c.name} (${c.data.mode})`}
+          >
+            <span style={{ fontFamily: fontStack(c.data.style.fontFamily), fontWeight: c.data.style.fontWeight, textTransform: c.data.style.uppercase ? "uppercase" : undefined, fontSize: 13 }}>
               word <span style={{ color: c.data.mode === "box" ? "#fff" : c.data.highlightColor, background: c.data.mode === "box" ? c.data.highlightColor : undefined, padding: "0 3px", borderRadius: 3 }}>by</span> word
             </span>
             <span className="label">{c.name}</span>
@@ -298,18 +328,37 @@ function EffectsTab() {
       </div>
       {tab !== "stickers" && <div className="muted small" style={{ marginBottom: 8 }}>{sel ? `Applies to: ${sel.name ?? sel.type}` : "Select a clip to apply."}</div>}
       <div className="tiles">
-        {(items as { id: string; name: string; category: string; data: { svgPath?: string } }[]).map((i) => (
-          <div key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
-            {tab === "stickers" && i.data.svgPath ? (
-              <svg viewBox="0 0 24 24" width="22" height="22">
-                <path d={i.data.svgPath} fill="white" />
-              </svg>
-            ) : (
-              <span style={{ fontWeight: 600, fontSize: 12 }}>{i.name}</span>
-            )}
-            <span className="label">{i.category}</span>
-          </div>
-        ))}
+        {(items as { id: string; name: string; category: string; data: { svgPath?: string; requiresSubjectMask?: boolean } }[]).map((i) => {
+          if (tab === "stickers" || i.id === "custom") {
+            return (
+              <div key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
+                {i.data.svgPath ? (
+                  <svg viewBox="0 0 24 24" width="22" height="22">
+                    <path d={i.data.svgPath} fill="white" />
+                  </svg>
+                ) : (
+                  <span style={{ fontWeight: 600, fontSize: 12 }}>{i.name}…</span>
+                )}
+                <span className="label">{i.category}</span>
+              </div>
+            );
+          }
+          const kind = tab === "filters" ? "filter" : tab === "transitions" ? "transition" : tab === "luts" ? "lut" : i.data.requiresSubjectMask ? "subject" : "effect";
+          const active = sel && tab === "filters" && "color" in sel ? (sel.color.filter?.id ?? "none") === i.id : sel && tab === "luts" && "color" in sel ? (sel.color.lut?.id ?? "none") === i.id : false;
+          return (
+            <PreviewTile
+              key={i.id}
+              kind={kind}
+              id={i.id}
+              name={i.name}
+              label={i.category}
+              active={active}
+              title={kind === "subject" ? `${i.name} (follows the subject; macOS)` : i.name}
+              badge={kind === "subject" ? <span className="badge">subject</span> : undefined}
+              onPick={() => apply(i.id)}
+            />
+          );
+        })}
       </div>
     </>
   );

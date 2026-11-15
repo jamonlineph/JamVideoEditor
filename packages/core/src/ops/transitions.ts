@@ -2,12 +2,13 @@ import type { Transition } from "../schema.js";
 import { EditError } from "../errors.js";
 import { EPS, cleanTime } from "../units.js";
 import { mainTrack, requireElement } from "../timeline/query.js";
-import { maxTransitionDuration } from "../timeline/handles.js";
+import { handleCoveredTransitionDuration, maxTransitionDuration } from "../timeline/handles.js";
 import type { EditContext } from "./context.js";
 
 /**
  * Add (or replace) a transition between a main-track clip and the next one.
- * Transitions are centered on the cut and consume media handles; durations are clamped.
+ * Transitions are centered on the cut and use media handles (spare footage past the cut) when the
+ * clips have them; without handles the edge frame is held. Durations are clamped to the shorter clip.
  * `type: "none"` removes the transition.
  */
 export function addTransition(ctx: EditContext, opts: { fromElementId: string; type: string; durationSeconds: number }): Transition | null {
@@ -26,11 +27,14 @@ export function addTransition(ctx: EditContext, opts: { fromElementId: string; t
   }
   const to = requireElement(project, toId);
   const max = maxTransitionDuration(project, from, to);
-  if (max <= EPS) throw new EditError("INVALID_RANGE", "Not enough media on either side of the cut for a transition (trim the clips to create handles)", { fromElementId: from.id, toElementId: toId });
+  if (max <= EPS) throw new EditError("INVALID_RANGE", "The clips at this cut are too short for a transition", { fromElementId: from.id, toElementId: toId });
   let duration = opts.durationSeconds;
   if (duration > max) {
-    ctx.warn(`Transition shortened to ${max.toFixed(3)}s (limited by media handles and clip lengths)`);
+    ctx.warn(`Transition shortened to ${max.toFixed(3)}s (it cannot be longer than the shorter clip)`);
     duration = max;
+  }
+  if (handleCoveredTransitionDuration(project, from, to) < duration - EPS) {
+    ctx.warn("These clips have no spare footage at the cut, so their edge frames are held during the transition. Trim the clips a little for motion on both sides.");
   }
   const tr: Transition = { id: existing >= 0 ? project.transitions[existing].id : ctx.ids("tr"), type: opts.type, fromElementId: from.id, toElementId: toId, durationSeconds: cleanTime(duration) };
   if (existing >= 0) project.transitions[existing] = tr;

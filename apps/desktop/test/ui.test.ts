@@ -77,6 +77,48 @@ describe("desktop app", () => {
     await shot("inspector-adjust");
   });
 
+  it("shows rendered previews on effect, transition, filter and LUT tiles, animated on hover", async () => {
+    await app.eval(clickButton("Effects", ".dock .tabs"));
+    for (const [chip, kind] of [["Effects", "effect"], ["Transitions", "transition"], ["Filters", "filter"], ["LUTs", "lut"]] as const) {
+      expect(await app.eval(clickButton(chip, ".dock .chips"))).toBe(true);
+      // The first tiles get a still rendered by the compositor (a JPEG data URL).
+      await app.waitFor(`[...document.querySelectorAll('.dock .tile.preview[data-preview^="${kind}:"] img')].filter((i) => i.src.startsWith("data:image/jpeg")).length >= 4`, 30_000);
+    }
+    // Hovering a transition plays it.
+    await app.eval(clickButton("Transitions", ".dock .chips"));
+    const sel = `.dock .tile.preview[data-preview="transition:slide_left"]`;
+    await app.waitFor(`!!document.querySelector('${sel} img')`, 30_000);
+    await app.eval(`document.querySelector('${sel} img').dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }))`);
+    await app.waitFor(`!!document.querySelector('${sel} canvas')`, 5000);
+    const frame = `(() => { const d = document.querySelector('${sel} canvas').getContext("2d").getImageData(0, 0, 320, 180).data; let s = 0; for (let i = 0; i < d.length; i += 101) s += d[i]; return s; })()`;
+    const seen = new Set<number>();
+    for (let i = 0; i < 8 && seen.size < 2; i++) {
+      seen.add(await app.eval<number>(frame));
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    expect(seen.size).toBeGreaterThan(1);
+    await app.eval(`document.querySelector('${sel} canvas').dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }))`);
+    await app.waitFor(`!!document.querySelector('${sel} img')`, 5000);
+    await shot("previews");
+  }, 90_000);
+
+  it("double-clicking a slider restores its default", async () => {
+    const [first] = await mainIds();
+    await app.call("setSelection", { elementIds: [first] });
+    await app.waitFor(`!!document.querySelector(".panel-list")`);
+    expect(await app.eval(clickButton("Transform", ".panel-list"))).toBe(true);
+    const scaleInput = `[...document.querySelectorAll(".inspector .field")].find((f) => f.querySelector("label")?.textContent?.trim().endsWith("Scale")).querySelector("input")`;
+    await app.eval(`(() => {
+      const input = ${scaleInput};
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "2.5");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    })()`);
+    await app.waitFor(`window.openedits.live.state.project.elements[${JSON.stringify(first)}].transform.scale > 2`);
+    await app.eval(`${scaleInput}.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
+    await app.waitFor(`window.openedits.live.state.project.elements[${JSON.stringify(first)}].transform.scale === 1`);
+  });
+
   it("trims a clip by dragging its edge on the timeline", async () => {
     const [first] = await mainIds();
     const before = (await project()).elements[first].duration as number;
@@ -108,6 +150,21 @@ describe("desktop app", () => {
     await app.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true }))`);
     await app.waitFor(`document.querySelectorAll(".lane.main .clip").length === ${count}`);
   });
+
+  it("restarts a crashed engine and reconnects without losing the project", async () => {
+    const before = await mainIds();
+    const engine = JSON.parse(fs.readFileSync(path.join(ws, ".engine.json"), "utf8")) as { pid: number };
+    process.kill(engine.pid, "SIGKILL");
+    await app.waitFor(`!window.openedits.live.state.connected`, 5000);
+    await app.waitFor(`window.openedits.live.state.connected && window.openedits.live.state.project`, 30_000);
+    expect(await mainIds()).toEqual(before);
+    const fresh = JSON.parse(fs.readFileSync(path.join(ws, ".engine.json"), "utf8")) as { pid: number };
+    expect(fresh.pid).not.toBe(engine.pid);
+    // The agent rejoins the new engine.
+    await agent.close();
+    agent = await connectAgent(ws);
+    expect((await agent.call<{ project: { id: string } }>("get_project")).project.id).toBeTruthy();
+  }, 60_000);
 
   it("records a voiceover an agent asks for (fake microphone)", async () => {
     const start = await agent.call<{ recording: boolean; start: number }>("startVoiceoverRecording", { start: 0.5, preRollSeconds: 0 });

@@ -3,10 +3,10 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { EngineHost } from "@openedits/engine";
+import { EngineHost, visionHelperPath } from "@openedits/engine";
 import { validateProject } from "@openedits/core";
 import { allTools, createMcpServer, unwrap } from "../src/index.js";
-import { speechClip, tempWorkspace, testMedia } from "../../engine/test/media.js";
+import { canSpeak, haveWhisper, speechClip, tempWorkspace, testMedia } from "../../engine/test/media.js";
 import { FakeAi } from "../../engine/test/fakeAi.js";
 
 /** Canned model answers so describeClip, AI retakes and prompt tracking run without the real API. */
@@ -23,6 +23,11 @@ const fakeAi = new FakeAi((req) => {
   // At the first frame the square is at x 80..200, y 120..240 of 640x360.
   return { found: true, label: "orange square", box: { x: 0.125, y: 0.333, w: 0.1875, h: 0.333 } };
 });
+
+/** Transcription needs whisper.cpp and its model; subject detection needs the Apple Vision helper (macOS). */
+const haveVision = process.platform === "darwin" && (() => { try { return !!visionHelperPath(); } catch { return false; } })();
+const fullStack = haveWhisper && canSpeak && haveVision;
+const NEEDS_FULL_STACK = ["transcribeClip", "get_transcript", "edit", "auto_edit", "generateCaptions", "detectSubjects", "trackObject", "addStickerFromCutout", "applySubjectEffect", "autoReframe", "describeClip"];
 
 let host: EngineHost;
 let client: Client;
@@ -319,7 +324,7 @@ describe("MCP tool surface", () => {
 
   });
 
-  it("drives the transcript, vision, speech and autopilot tools", { timeout: 300_000 }, async () => {
+  it.runIf(fullStack)("drives the transcript, vision, speech and autopilot tools", { timeout: 300_000 }, async () => {
     const speech = speechClip();
     const m = testMedia();
     await call("newProject", { name: "Phase 4", canvas: { aspectRatio: "16:9", resolution: "720p" } });
@@ -369,6 +374,35 @@ describe("MCP tool surface", () => {
     expect((await call("list_autopilot_jobs")).folder).toBe(host.paths.autoEdit);
   });
 
+  it("drives shot detection and text to speech on any platform", { timeout: 120_000 }, async () => {
+    const m = testMedia();
+    await call("newProject", { name: "Portable", canvas: { aspectRatio: "16:9", resolution: "720p" } });
+    const imp = await call("importToMediaPanel", { paths: [m.object, m.clipA] });
+    const [medObject] = imp.addedIds as string[];
+    const obj = (await call("addMedia", { mediaId: medObject })).elementId;
+    expect((await call("detectShots", { elementId: obj })).shotCount).toBe(1);
+    expect((await call("detectCuts", { mediaId: medObject })).cuts).toEqual([]);
+    expect((await call("list_autopilot_jobs")).folder).toBe(host.paths.autoEdit);
+    if (canSpeak) {
+      expect((await call("ttsVoices", { locale: "en" })).count).toBeGreaterThan(0);
+      const tts = await call("applyTextToSpeech", { text: "Three quick tips.", start: 0 });
+      expect(host.project.elements[tts.elementId].type).toBe("audio");
+      expect(tts.durationSeconds).toBeGreaterThan(0.5);
+    } else {
+      // Without a system voice the tools say so instead of crashing.
+      expect(JSON.stringify(await callError("ttsVoices"))).toMatch(/not available/i);
+      expect(JSON.stringify(await callError("applyTextToSpeech", { text: "Hello" }))).toMatch(/not available/i);
+    }
+    // Tools that need software this machine lacks answer with a clear error, never a hang.
+    if (!haveVision) expect(JSON.stringify(await callError("detectSubjects", { elementId: obj }))).toMatch(/Vision/);
+    if (!haveWhisper) {
+      await call("addMedia", { mediaId: (imp.addedIds as string[])[1] });
+      const tr = await call("transcribeClip", { waitSeconds: 30 });
+      expect(tr.status).toBe("failed");
+      expect(tr.error.message).toMatch(/whisper/i);
+    }
+  });
+
   it("drives the desktop-app support tools", { timeout: 120_000 }, async () => {
     // Playback mix for the app's audio clock, cached per project version.
     const mix = await call("previewAudio");
@@ -381,7 +415,10 @@ describe("MCP tool surface", () => {
     expect(wave.peaks.length).toBeGreaterThan(10);
     expect(Math.max(...wave.peaks)).toBeGreaterThan(0.01);
     // Settings the app's home screen edits.
-    expect((await call("getSettings")).shortcutMap).toBe("edits");
+    const settings = await call("getSettings");
+    expect(settings.shortcutMap).toBe("edits");
+    // What this computer can do, so the app can grey out the rest.
+    expect(settings.features).toEqual({ transcription: haveWhisper && fs.existsSync(host.settings.whisperModelPath), speech: canSpeak, vision: haveVision });
     expect((await call("updateSettings", { shortcutMap: "premiere", minSilenceSeconds: 0.4 })).shortcutMap).toBe("premiere");
     expect((await call("getSettings")).minSilenceSeconds).toBe(0.4);
     // Voiceover recording needs the desktop app (tested end to end in apps/desktop/test).
@@ -390,7 +427,7 @@ describe("MCP tool surface", () => {
   });
 
   it("covers every registered tool", () => {
-    const missing = allTools().map((t) => t.name).filter((n) => !called.has(n));
+    const missing = allTools().map((t) => t.name).filter((n) => !called.has(n) && (fullStack || !NEEDS_FULL_STACK.includes(n)));
     expect(missing).toEqual([]);
   });
 });

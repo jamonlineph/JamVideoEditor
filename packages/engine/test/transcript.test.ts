@@ -2,16 +2,15 @@ import fs from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { addMediaToTimeline, applyTranscriptOps, mainTrack, normalizeWord, timelineWords } from "@openedits/core";
 import { EngineHost, alignWords, chunkBoundaries, dtwPreset, findPauses, levelStats, parseWhisperJson, refineWordBounds, rmsEnvelope, toMono, renderAudioMix } from "../src/index.js";
-import { speechClip, tempWorkspace } from "./media.js";
+import { canSpeak, haveWhisper, speechClip, tempWorkspace, testMedia } from "./media.js";
 
 let host: EngineHost;
 let mediaId: string;
-const haveWhisper = fs.existsSync(EngineHost.create.length >= 0 ? `${process.env.HOME}/Movies/OpenCut/models/ggml-large-v3-turbo-q5_0.bin` : "");
 
 beforeAll(async () => {
   host = EngineHost.create({ workspaceRoot: tempWorkspace("transcript"), validate: true });
   host.newProject({ name: "Talk" });
-  const imp = await host.importMedia([speechClip()]);
+  const imp = await host.importMedia([canSpeak ? speechClip() : testMedia().clipA]);
   mediaId = imp.assets[0].id;
   host.mutate("add", "t", (c) => addMediaToTimeline(c, c.draft.media[mediaId], {}));
 });
@@ -86,7 +85,7 @@ describe("whisper parsing and word timing", () => {
   });
 });
 
-describe.runIf(haveWhisper)("transcription with whisper.cpp", () => {
+describe.runIf(haveWhisper && canSpeak)("transcription with whisper.cpp", () => {
   it("transcribes speech with fillers, stable ids and real pauses", { timeout: 120_000 }, async () => {
     const job = host.transcripts.start([mediaId]);
     const done = await host.jobs.wait(job.id, 110_000);

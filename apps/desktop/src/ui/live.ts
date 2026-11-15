@@ -1,5 +1,7 @@
+import { ipcRenderer } from "electron";
 import { applyPatches, enablePatches, type Patch } from "immer";
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { pathToFileURL } from "node:url";
 import type { Project } from "@openedits/core";
 
 enablePatches();
@@ -94,13 +96,36 @@ export class Live {
         } else if (msg.type === "uiRequest") void this.onUiRequest(msg);
       };
       ws.onclose = () => {
+        if (this.ws !== ws) return;
+        const wasConnected = this.state.connected;
         this.set({ connected: false });
         for (const p of this.pending.values()) p.reject(new ToolError("INTERNAL", "Disconnected from the engine"));
         this.pending.clear();
-        if (!settled) reject(new Error("Could not connect to the engine"));
-        else setTimeout(() => void this.connect().catch(() => {}), 1000);
+        if (!settled) {
+          settled = true;
+          reject(new Error("Could not connect to the engine"));
+        }
+        if (wasConnected) this.toast("error", "Lost the connection to the engine. Reconnecting…");
+        this.scheduleReconnect();
       };
     });
+  }
+
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Keep trying until the engine answers; the main process restarts it if it has died. */
+  private scheduleReconnect() {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(async () => {
+      try {
+        const info = (await ipcRenderer.invoke("ensure-engine")) as { port: number; token: string };
+        this.url = `ws://127.0.0.1:${info.port}/live?token=${info.token}`;
+      } catch {
+        /* keep the last known address */
+      }
+      // A failed attempt closes its socket, which schedules the next one.
+      this.connect().then(() => this.toast("info", "Reconnected to the engine"), () => {});
+    }, 1000);
   }
 
   private async onChange(msg: { kind: string; version: number; label: string; source: string; patches: Patch[]; state?: Project; projectId: string }) {
@@ -179,3 +204,37 @@ export function selectedElements(s: LiveState) {
   const p = s.project;
   return p ? (s.appState?.selection.elementIds ?? []).map((id) => p.elements[id]).filter(Boolean) : [];
 }
+
+/** Optional features this computer supports (reported by the engine). */
+export interface Features {
+  transcription: boolean;
+  speech: boolean;
+  vision: boolean;
+}
+
+let featuresPromise: Promise<Features> | undefined;
+
+/** Feature flags, fetched once; null until the engine has answered. */
+export function useFeatures(): Features | null {
+  const [features, setFeatures] = useState<Features | null>(null);
+  useEffect(() => {
+    let alive = true;
+    featuresPromise ??= live.call<{ features: Features }>("getSettings").then((r) => r.features);
+    featuresPromise.then((f) => alive && setFeatures(f)).catch(() => (featuresPromise = undefined));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return features;
+}
+
+/** A local file as a URL the page can load (spaces, "#" and Windows drive letters included). */
+export function fileUrl(file: string): string {
+  return pathToFileURL(file).href;
+}
+
+/** What the file manager is called on this platform, for "Show in …" buttons. */
+export const FILE_MANAGER = process.platform === "darwin" ? "Finder" : process.platform === "win32" ? "File Explorer" : "file manager";
+
+/** Ctrl on Windows/Linux and Cmd on macOS, for multi-select clicks. */
+export const additiveClick = (e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => e.metaKey || e.ctrlKey || e.shiftKey;

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { compositionDuration, isAudioKind, mainTrack, type Element, type Project, type Track } from "@openedits/core";
-import { live, useLive } from "./live.js";
-import { formatTime, ui, useUi, capturePointer } from "./uiStore.js";
+import { additiveClick, live, useLive } from "./live.js";
+import { droppedPaths } from "./Dock.js";
+import { formatTime, ui, useUi, capturePointer, seek } from "./uiStore.js";
 
 const LANE_H: Record<string, number> = { main: 64, audio: 40, default: 34 };
 const COLORS: Record<string, string> = {
@@ -171,10 +172,43 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     void live.run("move", { elementId: el.id, start, ...(d.laneId !== el.trackId ? { trackId: d.laneId } : {}), snap: false });
   };
 
+  /** Files dragged in from the desktop: import them, then place them where they were dropped. */
+  const dropFiles = async (files: string[], track: Track, t: number) => {
+    const r = await live.run<{ media?: { id: string }[] }>("importToMediaPanel", { paths: files });
+    const ids = (r?.media ?? []).map((m) => m.id); // in the order they were dropped
+    let at = t;
+    for (const id of ids) {
+      const media = live.state.project?.media[id];
+      if (!media) continue;
+      const placed = await placeMedia(id, track, at);
+      const el = placed?.elementId ? live.state.project?.elements[placed.elementId] : undefined;
+      if (el) at = el.start + el.duration;
+    }
+  };
+
+  const placeMedia = (mediaId: string, track: Track, t: number) => {
+    const p = live.state.project!;
+    const media = p.media[mediaId];
+    if (track.kind === "main" && media?.kind !== "audio") {
+      const ids = mainTrack(p).elementIds;
+      let index = ids.findIndex((id) => t < p.elements[id].start + p.elements[id].duration / 2);
+      if (index < 0) index = ids.length;
+      return live.run<{ elementId?: string }>("addMedia", { mediaId, index });
+    }
+    if (media?.kind === "audio") return live.run<{ elementId?: string }>("addMedia", { mediaId, start: t, role: track.kind === "sfx" || track.kind === "voiceover" ? track.kind : "music" });
+    return live.run<{ elementId?: string }>("addMedia", { mediaId, start: t, asOverlay: true });
+  };
+
   const onDrop = (e: React.DragEvent, track: Track) => {
     const mediaId = e.dataTransfer.getData("application/x-openedits-media");
     setDropX(null);
-    if (!mediaId) return;
+    if (!mediaId) {
+      const files = droppedPaths(e);
+      if (!files.length) return;
+      e.preventDefault();
+      void dropFiles(files, track, timeAt(e.clientX));
+      return;
+    }
     e.preventDefault();
     const t = timeAt(e.clientX);
     const target = (e.target as HTMLElement).closest<HTMLElement>(".clip")?.dataset.id;
@@ -293,7 +327,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                   }
                 }}
                 onDragOver={(e) => {
-                  if (!e.dataTransfer.types.includes("application/x-openedits-media")) return;
+                  if (!e.dataTransfer.types.includes("application/x-openedits-media") && !e.dataTransfer.types.includes("Files")) return;
                   e.preventDefault();
                   setDropX(timeAt(e.clientX) * pps);
                 }}
@@ -305,8 +339,8 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                   if (!el) return null;
                   return <Clip key={id} el={el} project={project} pps={pps} selected={selection.has(id)} drag={drag && "id" in drag && drag.id === id ? drag : null} onPointerDown={(e, kind) => {
                     e.stopPropagation();
-                    if (t.locked) return select(id, e.shiftKey || e.metaKey);
-                    if (!selection.has(id) || e.shiftKey || e.metaKey) select(id, e.shiftKey || e.metaKey);
+                    if (t.locked) return select(id, additiveClick(e));
+                    if (!selection.has(id) || additiveClick(e)) select(id, additiveClick(e));
                     capturePointer(e.currentTarget.closest(".lanes") as HTMLElement, e.pointerId);
                     if (kind === "body") setDrag({ kind: "move", id, startX: e.clientX, startY: e.clientY, origStart: el.start, dx: 0, laneId: t.id, moved: false });
                     else setDrag({ kind: "trim", id, side: kind, startX: e.clientX, dx: 0 });
@@ -349,7 +383,7 @@ function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element
       data-id={el.id}
       style={{ left, width: Math.max(2, width), background: COLORS[el.type], opacity: drag?.kind === "move" && drag.moved ? 0.8 : 1 }}
       onPointerDown={(e) => onPointerDown(e, "body")}
-      onDoubleClick={() => ui.set({ playhead: el.start })}
+      onDoubleClick={() => seek(el.start)}
     >
       {(el.type === "video" || el.type === "audio") && <Waveform el={el} project={project} pps={pps} />}
       <div className="name">

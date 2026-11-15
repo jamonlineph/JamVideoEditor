@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { AspectRatioSchema, EditError, FpsSchema, ResolutionSchema, addMediaToTimeline, compositionDuration, mainTrack, setBrief } from "@openedits/core";
-import { AutopilotWatcher, listAutopilotJobs } from "@openedits/engine";
+import { AutopilotWatcher, expandHome, listAutopilotJobs } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
 import { expectedVersion, mutate, projectSummary, round, summarize } from "./common.js";
 
@@ -18,7 +18,7 @@ function projectRow(ctx: ToolContext, id: string) {
 /** Resolve inbox file names (or absolute/relative paths) to absolute paths. */
 function resolveFiles(ctx: ToolContext, files: string[]): string[] {
   return files.map((f) => {
-    const expanded = f.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
+    const expanded = expandHome(f);
     if (path.isAbsolute(expanded)) return expanded;
     const inInbox = path.join(ctx.host.paths.inbox, expanded);
     return fs.existsSync(inInbox) ? inInbox : path.resolve(expanded);
@@ -168,7 +168,7 @@ export const projectTools = [
     name: "list_inbox",
     title: "List inbox",
     category: "project",
-    description: "Media files dropped in the inbox watch folder (~/Movies/OpenEdits/inbox). With probe, includes duration, size and codecs.",
+    description: "Media files dropped in the inbox watch folder (the workspace inbox folder). With probe, includes duration, size and codecs.",
     input: z.object({ probe: z.boolean().optional() }),
     readOnly: true,
     handler: async (a, ctx) => ({ inbox: ctx.host.paths.inbox, files: await ctx.host.listInbox({ probe: a.probe }) }),
@@ -236,7 +236,7 @@ export const projectTools = [
     name: "list_autopilot_jobs",
     title: "List autopilot jobs",
     category: "project",
-    description: "Hands-free jobs: videos dropped in ~/Movies/OpenEdits/auto-edit become projects with the STYLE.md first pass applied and a final render in the outbox (run `openedits autopilot` or `openedits serve --autopilot` to watch the folder). Shows recent jobs and files still waiting.",
+    description: "Hands-free jobs: videos dropped in the workspace auto-edit folder become projects with the STYLE.md first pass applied and a final render in the outbox (run `openedits autopilot` or `openedits serve --autopilot` to watch the folder). Shows recent jobs and files still waiting.",
     input: z.object({ limit: z.number().int().min(1).max(200).optional() }),
     readOnly: true,
     handler: (a, ctx) => ({

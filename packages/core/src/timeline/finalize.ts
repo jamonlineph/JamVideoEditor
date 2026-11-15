@@ -191,7 +191,7 @@ function cleanTransitions(ctx: EditContext) {
         tr.durationSeconds = 0;
       } else {
         tr.durationSeconds = cleanTime(max);
-        ctx.warn(`Transition ${tr.id} shortened to ${tr.durationSeconds.toFixed(3)}s (not enough media handles)`);
+        ctx.warn(`Transition ${tr.id} shortened to ${tr.durationSeconds.toFixed(3)}s (it cannot be longer than the shorter clip)`);
       }
     }
   }
