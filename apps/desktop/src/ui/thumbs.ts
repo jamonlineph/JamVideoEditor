@@ -48,6 +48,8 @@ const PREVIEW_PARAMS: Record<string, Record<string, number>> = {
   sharpen: { amount: 100 },
   denoise: { amount: 100 },
   light_leak: { speed: 1 },
+  shake: { amount: 90 },
+  zoom_pulse: { amount: 70 },
 };
 
 /** Effects that move over time: their still is taken at the moment they show most. */
