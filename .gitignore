@@ -7,3 +7,5 @@ coverage/
 .test-workspaces
 packages/engine/bin
 *.nosync/
+release/
+build/vendor/

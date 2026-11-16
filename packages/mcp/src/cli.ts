@@ -5,7 +5,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AutopilotWatcher, EngineHost, autoEditFiles, ffmpegEncoders, loadSettings, resolveWorkspace, speechAvailable, visionAvailable, whisperAvailable } from "@openedits/engine";
+import { AutopilotWatcher, EngineHost, autoEditFiles, ffmpegEncoders, ffmpegPath, loadSettings, resolveWorkspace, speechAvailable, visionAvailable, whisperAvailable } from "@openedits/engine";
 import { createMcpServer } from "./server.js";
 import { findRunningEngine, startHttpServer, type HttpServerHandle } from "./http.js";
 import { runStdioProxy } from "./proxy.js";
@@ -222,8 +222,9 @@ async function cmdDoctor() {
   const h264 = ["h264_videotoolbox", "libx264", "libopenh264", "h264_mf", "h264_nvenc", "h264_qsv", "h264_amf"].find((e) => encoders.has(e)) ?? null;
   const required: [string, string | null, string][] = [
     ["node", process.version, "Node 22+"],
-    ["ffmpeg", version("ffmpeg", ["-version"]), ffmpegFix],
-    ["ffprobe", version("ffprobe", ["-version"]), ffmpegFix],
+    // The binaries the engine will really use (bundled ones in the packaged app, else the PATH).
+    ["ffmpeg", version(ffmpegPath(), ["-version"]), ffmpegFix],
+    ["ffprobe", version(process.env.OPENEDITS_FFPROBE ?? "ffprobe", ["-version"]), ffmpegFix],
     ["H.264 encoder", h264, "install a full ffmpeg build (with libx264)"],
   ];
   const optional: [string, string | null, string][] = [

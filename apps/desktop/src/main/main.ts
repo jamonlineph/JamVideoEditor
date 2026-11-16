@@ -9,7 +9,10 @@ import path from "node:path";
  * shared with any AI agent connected over MCP; this window is a client of that engine.
  */
 const ROOT = path.resolve(__dirname, "../../..");
-const CLI = path.join(ROOT, "packages/mcp/dist/cli.js");
+// Packaged app: desktop/main.cjs sits next to engine/cli.mjs. Development: the built workspace packages.
+const PACKAGED_CLI = path.join(__dirname, "..", "engine", "cli.mjs");
+const CLI = fs.existsSync(PACKAGED_CLI) ? PACKAGED_CLI : path.join(ROOT, "packages/mcp/dist/cli.js");
+const PACKAGED = CLI === PACKAGED_CLI;
 const TEST = process.env.OPENEDITS_UI_TEST === "1";
 // Same rule as the engine's defaultWorkspaceRoot (packages/engine/src/workspace.ts).
 const legacyWorkspace = path.join(os.homedir(), "Movies", "OpenEdits");
@@ -28,15 +31,31 @@ interface EngineInfo {
 let engine: ChildProcess | null = null;
 let win: BrowserWindow | null = null;
 
-/** System Node for the engine (its SQLite module is built for Node, not for Electron). */
-function nodeBinary(): string {
-  const win = process.platform === "win32";
-  const candidates = win
-    ? [process.env.OPENEDITS_NODE, path.join(process.env.ProgramFiles ?? "C:\\Program Files", "nodejs", "node.exe"), path.join(process.env.LOCALAPPDATA ?? "", "Programs", "nodejs", "node.exe")]
-    : [process.env.OPENEDITS_NODE, "/opt/homebrew/bin/node", path.join(os.homedir(), ".local/bin/node"), "/usr/local/bin/node", "/usr/bin/node"];
-  for (const c of candidates) if (c && fs.existsSync(c)) return c;
-  return "node"; // from PATH (nvm, fnm, volta, …)
+/**
+ * Helper programs shipped inside the packaged app (Resources/vendor): FFmpeg, ffprobe and, on
+ * macOS, the Apple Vision helper. The engine, render host and preview find them through these
+ * variables; without them they use whatever is on the PATH.
+ */
+function useBundledTools() {
+  const exe = process.platform === "win32" ? ".exe" : "";
+  const vendor = path.join(process.resourcesPath ?? "", "vendor");
+  const tools: [string, string][] = [
+    ["OPENEDITS_FFMPEG", `ffmpeg${exe}`],
+    ["OPENEDITS_FFPROBE", `ffprobe${exe}`],
+    ["OPENEDITS_VISION", "openedits-vision"],
+  ];
+  for (const [env, file] of tools) {
+    const p = path.join(vendor, file);
+    if (!process.env[env] && fs.existsSync(p)) process.env[env] = p;
+  }
+  // Apps opened from the Finder get a minimal PATH: add Homebrew's folders so a user's own ffmpeg,
+  // whisper-cli and espeak are found.
+  if (process.platform === "darwin") {
+    const extra = ["/opt/homebrew/bin", "/usr/local/bin"].filter((d) => !(process.env.PATH ?? "").split(":").includes(d));
+    process.env.PATH = [...extra, process.env.PATH ?? "/usr/bin:/bin"].join(":");
+  }
 }
+useBundledTools();
 
 async function healthy(info: EngineInfo): Promise<boolean> {
   try {
@@ -69,9 +88,16 @@ async function startEngine(): Promise<EngineInfo> {
   const existing = readInfo();
   if (existing && (await healthy(existing))) return existing;
   if (!fs.existsSync(CLI)) throw new Error(`The engine is not built (${CLI} is missing). Run \`npm run build\` first.`);
-  const node = nodeBinary();
+  // The engine runs on the Node built into Electron, so nothing else has to be installed.
+  const node = process.execPath;
   const child = spawn(node, [CLI, "serve", "--port", "0", ...(process.env.OPENEDITS_AUTOPILOT ? ["--autopilot"] : [])], {
-    env: { ...process.env, OPENEDITS_WORKSPACE: workspace, ELECTRON_RUN_AS_NODE: undefined },
+    env: {
+      ...process.env,
+      OPENEDITS_WORKSPACE: workspace,
+      ELECTRON_RUN_AS_NODE: "1",
+      // A packaged app runs its compositor window from its own binary (see entry.cjs).
+      ...(PACKAGED ? { OPENEDITS_ELECTRON: process.execPath } : {}),
+    },
     stdio: ["ignore", "inherit", "pipe"],
     windowsHide: true,
   });
@@ -87,8 +113,8 @@ async function startEngine(): Promise<EngineInfo> {
   const started = Date.now();
   while (Date.now() - started < 30_000) {
     await new Promise((r) => setTimeout(r, 200));
-    if (spawnError) throw new Error(`Could not start the engine with "${node}": ${(spawnError as Error).message}. Install Node.js 22 or newer, or set OPENEDITS_NODE to the node binary.`);
-    if (engine.exitCode !== null) throw new Error(`The engine exited (${engine.exitCode}).\n${lastOutput.trim()}\n\nRun \`node ${CLI} doctor\` to check the setup.`);
+    if (spawnError) throw new Error(`Could not start the engine: ${(spawnError as Error).message}`);
+    if (engine.exitCode !== null) throw new Error(`The engine exited (${engine.exitCode}).\n${lastOutput.trim()}`);
     const info = readInfo();
     if (info && info.pid === engine.pid && (await healthy(info))) return info;
   }
