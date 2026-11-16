@@ -21,7 +21,9 @@ export class RenderHostClient {
   private idleTimer: NodeJS.Timeout | null = null;
   versions: Record<string, string> = {};
 
-  private locate(): { electron: string; main: string } {
+  private locate(): { electron: string; main: string | null } {
+    // Inside the packaged app the app's own binary is the render host (entry.cjs switches on a flag).
+    if (process.env.OPENEDITS_ELECTRON) return { electron: process.env.OPENEDITS_ELECTRON, main: null };
     const require = createRequire(import.meta.url);
     let electron: string;
     let main: string;
@@ -44,7 +46,7 @@ export class RenderHostClient {
     delete env.ELECTRON_RUN_AS_NODE;
     this.starting = new Promise<void>((resolve, reject) => {
       // Chromium refuses to start as root with its sandbox on (containers, CI).
-      const args = [main, ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [])];
+      const args = [main ?? "--openedits-render-host", ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [])];
       const child = spawn(electron, args, { stdio: ["ignore", "ignore", process.env.OPENEDITS_RENDER_DEBUG ? "inherit" : "ignore", "ipc"], env });
       this.child = child;
       const timer = setTimeout(() => fail(new Error("The render host did not start within 30 s")), 30_000);

@@ -23,12 +23,13 @@
     "openedits": "node packages/mcp/dist/cli.js",
     "clean": "node scripts/clean.mjs",
     "test:unit": "vitest run packages/core packages/engine",
-    "app": "npm run build && node scripts/app.mjs"
+    "app": "npm run build && node scripts/app.mjs",
+    "dist": "node scripts/package.mjs"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
     "fast-check": "^4.10.2",
     "tsx": "^4.23.15",

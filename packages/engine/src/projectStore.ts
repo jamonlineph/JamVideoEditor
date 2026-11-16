@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { openDatabase, transaction, type Database } from "./sqlite.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { HistoryEntry, MediaTranscript, Project, TranscriptIndex } from "@openedits/core";
@@ -27,16 +27,14 @@ interface HistoryRow {
  * and the persisted undo/redo stacks (so history survives restarts).
  */
 export class ProjectStore {
-  private db: Database.Database;
+  private db: Database;
   readonly dir: string;
   readonly maxHistory: number;
 
   private constructor(dir: string, maxHistory = 300) {
     this.dir = dir;
     this.maxHistory = maxHistory;
-    this.db = new Database(path.join(dir, "project.db"));
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("busy_timeout = 3000");
+    this.db = openDatabase(path.join(dir, "project.db"));
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, version INTEGER NOT NULL, saved_at INTEGER NOT NULL);
@@ -117,7 +115,7 @@ export class ProjectStore {
   // ---- undo history persistence
 
   loadHistory(): { undo: HistoryEntry[]; redo: HistoryEntry[] } {
-    const rows = this.db.prepare("SELECT * FROM history ORDER BY seq").all() as HistoryRow[];
+    const rows = this.db.prepare("SELECT * FROM history ORDER BY seq").all() as unknown as HistoryRow[];
     const toEntry = (r: HistoryRow): HistoryEntry => ({ label: r.label, source: r.source, at: r.at, patches: JSON.parse(r.patches), inversePatches: JSON.parse(r.inverse) });
     return { undo: rows.filter((r) => r.stack === "undo").map(toEntry), redo: rows.filter((r) => r.stack === "redo").map(toEntry) };
   }
@@ -135,7 +133,7 @@ export class ProjectStore {
 
   /** Persist a commit/undo/redo together with the new state, atomically. */
   recordEvent(kind: "commit" | "undo" | "redo", entry: HistoryEntry, project: Project, version: number, now: number) {
-    const tx = this.db.transaction(() => {
+    transaction(this.db, () => {
       if (kind === "commit") {
         this.db.prepare("DELETE FROM history WHERE stack = 'redo'").run();
         this.insertHistory("undo", entry);
@@ -147,7 +145,6 @@ export class ProjectStore {
       else this.moveTop("redo", "undo");
       this.saveState(project, version, now);
     });
-    tx();
   }
 
   close() {

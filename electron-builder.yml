@@ -1,0 +1,60 @@
+# Installable apps (npm run dist). See scripts/package.mjs for how release/app is staged.
+appId: app.openedits.studio
+productName: OpenEdits Studio
+copyright: Copyright © 2026 OpenEdits
+electronVersion: 45.2.3
+directories:
+  app: release/app
+  output: release/dist
+  buildResources: build
+# Plain folders instead of an asar archive: the engine and compositor are started as separate
+# processes from these files, and helper binaries sit beside them.
+asar: false
+npmRebuild: false
+files:
+  - "**/*"
+extraResources:
+  - from: build/vendor/${arch}
+    to: vendor
+    filter: ["**/*"]
+artifactName: OpenEdits-Studio-${version}-${os}-${arch}.${ext}
+
+mac:
+  category: public.app-category.video
+  icon: build/icon.png
+  target:
+    - dmg
+    - zip
+  # Ad-hoc signed ("-"): Apple Silicon refuses to run unsigned apps, and there is no Developer ID
+  # here. macOS asks once before the first launch (see README). Set CSC_LINK / CSC_KEY_PASSWORD
+  # in the workflow's secrets and change this to a real identity to sign and notarize.
+  identity: "-"
+  hardenedRuntime: false
+  extendInfo:
+    NSMicrophoneUsageDescription: OpenEdits Studio records voiceovers from your microphone.
+dmg:
+  title: OpenEdits Studio ${version}
+  contents:
+    - { x: 140, y: 190 }
+    - { x: 400, y: 190, type: link, path: /Applications }
+
+linux:
+  category: AudioVideo
+  syncDesktopName: true
+  icon: build/icon.png
+  maintainer: OpenEdits <noreply@openedits.app>
+  synopsis: Local-first video editor with a built-in MCP server
+  target:
+    - deb
+    - AppImage
+deb:
+  # Text to speech on Linux uses eSpeak NG when it is installed.
+  recommends: [espeak-ng]
+
+win:
+  icon: build/icon.png
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

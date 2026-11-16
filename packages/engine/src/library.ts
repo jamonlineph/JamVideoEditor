@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { openDatabase, transaction, type Database } from "./sqlite.js";
 
 export interface ProjectRow {
   id: string;
@@ -49,12 +49,10 @@ function toRow(r: Raw): ProjectRow {
 
 /** The project library (`Project.db`): one row per project, used by the home screen grid. */
 export class Library {
-  private db: Database.Database;
+  private db: Database;
 
   constructor(file: string) {
-    this.db = new Database(file);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("busy_timeout = 3000");
+    this.db = openDatabase(file);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -86,7 +84,7 @@ export class Library {
 
   list(opts: { filter?: ProjectFilter; sort?: ProjectSort; query?: string } = {}): ProjectRow[] {
     const where: string[] = [];
-    const args: unknown[] = [];
+    const args: string[] = [];
     if (opts.filter === "pinned") where.push("pinned = 1");
     if (opts.filter === "favorites") where.push("favorite = 1");
     if (opts.query) {
@@ -100,7 +98,7 @@ export class Library {
       opened: "COALESCE(opened_at, 0) DESC",
     }[opts.sort ?? "updated"];
     const sql = `SELECT * FROM projects ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY pinned DESC, ${order}`;
-    return (this.db.prepare(sql).all(...args) as Raw[]).map(toRow);
+    return (this.db.prepare(sql).all(...args) as unknown as Raw[]).map(toRow);
   }
 
   rename(id: string, name: string, now: number) {

@@ -17,7 +17,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "1.7.0",
     "@openedits/core": "0.1.0",
-    "@openedits/render-host": "0.1.0",
-    "better-sqlite3": "^13.1.1"
+    "@openedits/render-host": "0.1.0"
   }
 }

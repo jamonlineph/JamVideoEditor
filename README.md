@@ -4,6 +4,26 @@ A local-first video editor with a built-in MCP server. Creators edit in the desk
 
 **Status: Phases 1–5.** The composition engine, persistence, a GPU compositor with frame capture, previews and export, audio analysis, word-ID transcript editing, on-device vision, a hands-free autopilot, an MCP server with 158 tools, and the Electron desktop app. Everything is covered by tests, including end-to-end tests that drive the real app window.
 
+## Install the app
+
+Installers are built by the **Build apps** GitHub Actions workflow on every push (download them from the run's *Artifacts*), and attached to a GitHub release when a `v*` tag is pushed. They bundle everything the editor needs, FFmpeg included: no Node.js or Homebrew required.
+
+| Computer | File | How to install |
+| --- | --- | --- |
+| Mac with Apple Silicon (M1 and later) | `OpenEdits-Studio-<version>-mac-arm64.dmg` | Open the .dmg and drag **OpenEdits Studio** to Applications. |
+| Mac with an Intel processor | `OpenEdits-Studio-<version>-mac-x64.dmg` | Same. |
+| Chromebook or Linux PC (Intel/AMD) | `OpenEdits-Studio-<version>-linux-amd64.deb` (or `-x86_64.AppImage`) | See *Chromebook* below; on other Linux, `sudo apt install ./OpenEdits-Studio-…-amd64.deb`. |
+| Chromebook or Linux on ARM | `OpenEdits-Studio-<version>-linux-arm64.deb` (or `-arm64.AppImage`) | Same. |
+| Windows | `OpenEdits-Studio-<version>-win-x64.exe` | Run the installer. |
+
+**First launch on a Mac.** The app is ad-hoc signed, not signed with an Apple Developer ID, so macOS asks before opening it the first time. Double-click it once, then go to **System Settings → Privacy & Security** and click **Open Anyway** (on older macOS, right-click the app and choose **Open**). To ship without this step, sign and notarize with a Developer ID: set `mac.identity` in `electron-builder.yml` and add the certificate to the workflow's secrets.
+
+**Chromebook.** Turn on Linux (**Settings → About ChromeOS → Developers → Linux development environment**), download the `.deb` for your Chromebook's processor (most are Intel/AMD → `amd64`; ARM Chromebooks such as MediaTek models → `arm64`), then double-click it in the Files app and choose **Install**. OpenEdits Studio then appears in the launcher under *Linux apps*. Video preview and export run on the processor, so expect them to be slower than on a Mac.
+
+**Googlebook and Android.** OpenEdits Studio is a desktop app (Electron) whose editing engine and video pipeline run as separate desktop processes (Node.js, FFmpeg, a compositor window). Android cannot run those, so there is no `.apk`. A Googlebook that offers a Linux environment, like a Chromebook, can use the Linux `.deb`; one that only runs Android apps would need an Android version of the editor, which would be a separate project.
+
+**Build an installer yourself:** `npm run dist -- --mac --arm64` (on a Mac; the .dmg needs macOS), `npm run dist -- --linux --x64`, or `npm run dist -- --win --x64`. Output goes to `release/dist`. Run `node scripts/fetch-tools.mjs --platform <darwin|linux|win32> --arch <arm64|x64>` first to bundle FFmpeg; without it the app uses the FFmpeg on the computer's PATH.
+
 ## Quick start
 
 ```bash
@@ -130,7 +150,7 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
 
 ## Desktop app (`apps/desktop`)
 
-- **Process model.** The Electron main process starts or joins `openedits serve` and opens one window. The window is a pure `/live` client: every button, slider and drag calls the same tool handlers agents use. better-sqlite3 is built for system Node, so the engine stays in its own Node process.
+- **Process model.** The Electron main process starts or joins `openedits serve` and opens one window. The window is a pure `/live` client: every button, slider and drag calls the same tool handlers agents use. The engine runs in its own process on the Node.js built into Electron and stores projects with Node's built-in SQLite (`node:sqlite`), so the app has no native modules and needs no separate Node install. In the packaged app the same binary also serves as the hidden compositor window (`--openedits-render-host`).
 - **Home.** A project grid with search, pinned and favorite filters, rename, delete, and a new project at any aspect. Also the inbox (one click makes a project), autopilot jobs, and the shortcut map picker.
 - **Editor.** Four panes:
   - **Media dock:** import, drag and drop, filters, and audio from `brand/music` and `brand/sfx`; text presets and caption styles; filters, effects, transitions, LUTs and stickers. Every filter, effect, transition, adjust preset and LUT tile shows a preview drawn by the real compositor on built-in sample pictures; hovering a tile animates it (effects sweep in, transitions play, LUTs slide a log/Rec.709 divider).
