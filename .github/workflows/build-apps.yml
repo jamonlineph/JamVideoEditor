@@ -56,6 +56,7 @@ jobs:
             files: |
               release/dist/*.deb
               release/dist/*.AppImage
+              release/dist/*.apk
           - name: Windows
             os: windows-latest
             tools: "win32:x64"
@@ -119,11 +120,51 @@ jobs:
           engine call addText '{"text":"Googlebook","start":0,"duration":2}' > /dev/null
           FRAME=$(engine call captureFrame '{"time":0.5}')
           echo "$FRAME" | grep '"path"'
+      - name: Build the Googlebook launcher app (.apk)
+        if: runner.os == 'Linux'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          # With the three ANDROID_* secrets set, every build is signed with the same key and
+          # installs over the previous one; otherwise the build makes a throwaway key.
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export ANDROID_KEYSTORE="$RUNNER_TEMP/release.keystore"
+          else
+            unset ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS
+          fi
+          apps/android/build.sh
+      - name: Let the Android emulator use hardware virtualization
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run the launcher app on an Android emulator against the installed editor
+        if: runner.os == 'Linux'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_tablet
+          disable-animations: true
+          script: mkdir -p release/screenshots && apps/android/emulator-test.sh release/dist/OpenEdits-Studio-*-android.apk release/screenshots
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux' && always()
+        with:
+          name: android-emulator-screenshots
+          path: release/screenshots/*.png
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
         with:
           name: OpenEdits-Studio-Googlebook
-          path: release/dist/*.deb
+          path: |
+            release/dist/*.deb
+            release/dist/*.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

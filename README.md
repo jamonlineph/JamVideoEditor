@@ -27,9 +27,13 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 2. Find out which file you need: `dpkg --print-architecture` prints `amd64` or `arm64`. Download the matching `OpenEdits-Studio-<version>-linux-<amd64|arm64>.deb` and put it where the Terminal can see it (the Terminal's own files, or a folder you have shared with it).
 3. Install it from the folder the file is in: `sudo apt update && sudo apt install ./OpenEdits-Studio-*.deb`
 4. Start the editor: `openedits-web`. It prints a link like `http://localhost:4417/?token=…`. Open that link in Chrome on the Googlebook. If the Googlebook asks whether to allow the port, allow it.
-5. Optional: in Chrome's menu choose **Cast, save and share → Install page as app** to get an OpenEdits Studio icon in the launcher and its own window. The Terminal has to be running `openedits-web` whenever you use it; the link is only needed the first time in each browser.
+5. Optional, for an OpenEdits Studio icon in the launcher and its own window, either:
+   - install `OpenEdits-Studio-<version>-android.apk` (open the file on the Googlebook and allow installing it), start it, paste the link from step 4 once and press **Open**; or
+   - in Chrome's menu choose **Cast, save and share → Install page as app**.
 
-In Chrome, **Import** uploads files from the Googlebook into the editor's workspace (`~/Videos/OpenEdits/uploads` inside Linux), and a finished export has a **Download** button that saves it to the Googlebook's Downloads. Voiceover recording uses the Googlebook's microphone through Chrome. Preview and export run on the processor inside the Linux virtual machine, so give the Terminal as much memory as you can in its settings and expect long exports to take a while. `OPENEDITS_PORT=5000 openedits-web` uses another port. There is no `.apk`: the engine, FFmpeg and the compositor are desktop programs that an Android app cannot run.
+   Either way the Terminal has to be running `openedits-web` whenever you edit; the link is only needed the first time. The `.apk` is the window, not the editor: it shows the editor that the `.deb` runs, with a file picker for imports, the microphone for voiceovers, and exports saved to Downloads. It does nothing without the `.deb`. It is built from `apps/android` with `apps/android/build.sh` (the Android SDK's command-line tools; no Gradle).
+
+In Chrome, **Import** uploads files from the Googlebook into the editor's workspace (`~/Videos/OpenEdits/uploads` inside Linux), and a finished export has a **Download** button that saves it to the Googlebook's Downloads. Voiceover recording uses the Googlebook's microphone through Chrome. Preview and export run on the processor inside the Linux virtual machine, so give the Terminal as much memory as you can in its settings and expect long exports to take a while. `OPENEDITS_PORT=5000 openedits-web` uses another port. The engine, FFmpeg and the compositor are desktop programs, which is why they stay in Linux rather than inside the `.apk`.
 
 The same command works on any Linux machine without a desktop, for example a server reached with `ssh -L 4417:localhost:4417 …`.
 
