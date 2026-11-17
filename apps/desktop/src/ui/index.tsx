@@ -25,6 +25,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 // Platform class: the title bar leaves room for macOS traffic lights or Windows window buttons.
 document.body.classList.add(`platform-${process.platform}`);
+if (__OPENEDITS_WEB__) document.body.classList.add("web");
 
 // Entry point: mount the UI, then connect to the engine's /live channel (state arrives in `hello`).
 createRoot(document.getElementById("root")!).render(

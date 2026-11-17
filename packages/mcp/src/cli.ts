@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -16,7 +17,8 @@ const log = (msg: string) => process.stderr.write(`[openedits] ${msg}\n`);
 
 const USAGE = `OpenEdits Studio ${VERSION}
 
-  openedits serve [--port N] [--autopilot]   run the engine (HTTP MCP at /mcp, live WebSocket at /live)
+  openedits serve [--port N] [--autopilot] [--web]   run the engine (HTTP MCP at /mcp, live WebSocket at /live;
+                                   --web also serves the editor to a browser on this machine)
   openedits mcp [--no-http]        stdio MCP server for AI clients (joins a running engine, or hosts one)
   openedits call <tool> [json]     call one tool and print the result
   openedits repl                   interactive: <tool> <json>
@@ -45,18 +47,55 @@ function takeOption(args: string[], flag: string): string | undefined {
   return v;
 }
 
-async function startHttpWithFallback(host: EngineHost, preferred: number): Promise<HttpServerHandle> {
+type ServerOptions = Parameters<typeof startHttpServer>[1];
+
+async function startHttpWithFallback(host: EngineHost, preferred: number, opts: ServerOptions = {}): Promise<HttpServerHandle> {
   try {
-    return await startHttpServer(host, { port: preferred });
+    return await startHttpServer(host, { ...opts, port: preferred });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EADDRINUSE") throw e;
     log(`port ${preferred} is busy; using a random port`);
-    return startHttpServer(host, { port: 0 });
+    return startHttpServer(host, { ...opts, port: 0 });
   }
 }
 
+/** The built browser UI: next to the packaged engine, or in the workspace checkout. */
+function webRoot(): string | undefined {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return [process.env.OPENEDITS_WEB_ROOT, path.join(here, "..", "web"), path.join(here, "..", "..", "..", "apps", "desktop", "dist", "web")].find((d): d is string => !!d && fs.existsSync(path.join(d, "index.html")));
+}
+
+/** Whether the engine on this port was started with --web (it answers "/" with a page, not a 404). */
+async function servesWeb(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1500) });
+    return res.status === 401 || res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+/** Browser mode keeps one token per workspace, so a browser that signed in once stays signed in. */
+function webToken(file: string): string {
+  try {
+    const saved = fs.readFileSync(file, "utf8").trim();
+    if (/^[0-9a-f]{32,}$/.test(saved)) return saved;
+  } catch {
+    /* first run */
+  }
+  const token = randomBytes(24).toString("hex");
+  fs.writeFileSync(file, token + "\n", { mode: 0o600 });
+  return token;
+}
+
 async function cmdServe(args: string[]) {
+  const withWeb = takeFlag(args, "--web");
   const existing = await findRunningEngine(resolveWorkspace().engineFile);
+  if (existing && withWeb && (await servesWeb(existing.port))) {
+    // Started twice (a second Terminal tab, say): the editor is already up, so show its link again.
+    console.log(`\nOpenEdits Studio is already running. Open this link in your browser:\n\n  http://localhost:${existing.port}/?token=${existing.token}\n`);
+    return;
+  }
   if (existing) {
     log(`an engine is already running for this workspace (pid ${existing.pid}, port ${existing.port})`);
     process.exit(1);
@@ -64,9 +103,22 @@ async function cmdServe(args: string[]) {
   const host = EngineHost.create();
   const port = Number(takeOption(args, "--port") ?? host.settings.httpPort);
   const withAutopilot = takeFlag(args, "--autopilot");
-  const http = await startHttpWithFallback(host, port);
+  let serverOpts: ServerOptions = {};
+  if (withWeb) {
+    const root = webRoot();
+    if (!root) {
+      log("the browser UI is not built (run: npm run build)");
+      process.exit(1);
+    }
+    serverOpts = { token: webToken(path.join(host.paths.root, ".web-token")), web: { root, ffmpeg: ffmpegPath() } };
+  }
+  const http = await startHttpWithFallback(host, port, serverOpts);
   log(`engine ready: http://127.0.0.1:${http.port}/mcp  (workspace ${host.paths.root})`);
   log(`token in ${host.paths.engineFile}`);
+  if (withWeb) {
+    // stdout, so a launcher script can pick the link up.
+    console.log(`\nOpenEdits Studio is running. Open this link in your browser:\n\n  http://localhost:${http.port}/?token=${http.token}\n\nKeep this window open while you edit. Press Ctrl+C to stop.\n`);
+  }
   const watcher = withAutopilot ? new AutopilotWatcher({ workspaceRoot: host.paths.root, log }) : null;
   if (watcher) {
     watcher.start();

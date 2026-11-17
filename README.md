@@ -13,6 +13,7 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 | Mac with Apple Silicon (M1 and later) | `OpenEdits-Studio-<version>-mac-arm64.dmg` | Open the .dmg and drag **OpenEdits Studio** to Applications. |
 | Mac with an Intel processor | `OpenEdits-Studio-<version>-mac-x64.dmg` | Same. |
 | Chromebook or Linux PC (Intel/AMD) | `OpenEdits-Studio-<version>-linux-amd64.deb` (or `-x86_64.AppImage`) | See *Chromebook* below; on other Linux, `sudo apt install ./OpenEdits-Studio-…-amd64.deb`. |
+| Googlebook | The same Linux `.deb`: `-amd64.deb` on Intel/AMD models, `-arm64.deb` on ARM models | See *Googlebook* below: install it in the Terminal, run `openedits-web`, and edit in Chrome. |
 | Chromebook or Linux on ARM | `OpenEdits-Studio-<version>-linux-arm64.deb` (or `-arm64.AppImage`) | Same. |
 | Windows | `OpenEdits-Studio-<version>-win-x64.exe` | Run the installer. |
 
@@ -20,7 +21,17 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 
 **Chromebook.** Turn on Linux (**Settings → About ChromeOS → Developers → Linux development environment**), download the `.deb` for your Chromebook's processor (most are Intel/AMD → `amd64`; ARM Chromebooks such as MediaTek models → `arm64`), then double-click it in the Files app and choose **Install**. OpenEdits Studio then appears in the launcher under *Linux apps*. Video preview and export run on the processor, so expect them to be slower than on a Mac.
 
-**Googlebook and Android.** OpenEdits Studio is a desktop app (Electron) whose editing engine and video pipeline run as separate desktop processes (Node.js, FFmpeg, a compositor window). Android cannot run those, so there is no `.apk`. A Googlebook that offers a Linux environment, like a Chromebook, can use the Linux `.deb`; one that only runs Android apps would need an Android version of the editor, which would be a separate project.
+**Googlebook.** A Googlebook runs Android apps and has a Linux Terminal (a Debian virtual machine). That Terminal does not open Linux app windows on the Googlebook's desktop yet, but it does pass `localhost` through to the Googlebook's browser. So on a Googlebook the editor runs in the Terminal and you use it in Chrome: the same editor, the same engine, the same exports.
+
+1. Open the **Terminal** app (turn on the Linux Terminal in the Googlebook's settings first if you have not used it yet).
+2. Find out which file you need: `dpkg --print-architecture` prints `amd64` or `arm64`. Download the matching `OpenEdits-Studio-<version>-linux-<amd64|arm64>.deb` and put it where the Terminal can see it (the Terminal's own files, or a folder you have shared with it).
+3. Install it from the folder the file is in: `sudo apt update && sudo apt install ./OpenEdits-Studio-*.deb`
+4. Start the editor: `openedits-web`. It prints a link like `http://localhost:4417/?token=…`. Open that link in Chrome on the Googlebook. If the Googlebook asks whether to allow the port, allow it.
+5. Optional: in Chrome's menu choose **Cast, save and share → Install page as app** to get an OpenEdits Studio icon in the launcher and its own window. The Terminal has to be running `openedits-web` whenever you use it; the link is only needed the first time in each browser.
+
+In Chrome, **Import** uploads files from the Googlebook into the editor's workspace (`~/Videos/OpenEdits/uploads` inside Linux), and a finished export has a **Download** button that saves it to the Googlebook's Downloads. Voiceover recording uses the Googlebook's microphone through Chrome. Preview and export run on the processor inside the Linux virtual machine, so give the Terminal as much memory as you can in its settings and expect long exports to take a while. `OPENEDITS_PORT=5000 openedits-web` uses another port. There is no `.apk`: the engine, FFmpeg and the compositor are desktop programs that an Android app cannot run.
+
+The same command works on any Linux machine without a desktop, for example a server reached with `ssh -L 4417:localhost:4417 …`.
 
 **Build an installer yourself:** `npm run dist -- --mac --arm64` (on a Mac; the .dmg needs macOS), `npm run dist -- --linux --x64`, or `npm run dist -- --win --x64`. Output goes to `release/dist`. Run `node scripts/fetch-tools.mjs --platform <darwin|linux|win32> --arch <arm64|x64>` first to bundle FFmpeg; without it the app uses the FFmpeg on the computer's PATH.
 
@@ -70,7 +81,7 @@ claude mcp add openedits -- node "$PWD/packages/mcp/dist/cli.js" mcp   # run fro
 
 | Command | What it does |
 | --- | --- |
-| `openedits serve [--port N]` | Runs the engine. MCP over Streamable HTTP is at `/mcp`, live patches and UI calls go over the WebSocket at `/live`, and `/health` reports status. |
+| `openedits serve [--port N] [--web]` | Runs the engine. MCP over Streamable HTTP is at `/mcp`, live patches and UI calls go over the WebSocket at `/live`, and `/health` reports status. With `--web` it also serves the editor to a browser on the same machine and prints its link (this is what `openedits-web` runs). |
 | `openedits mcp` | Starts a stdio MCP server. It joins a running engine if there is one; otherwise it hosts one, which other clients can join over HTTP. |
 | `openedits call <tool> '<json>'` | Calls a single tool and prints the JSON result. |
 | `openedits repl` | Interactive prompt; each line is `<tool> <json>`. |
@@ -147,6 +158,14 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
 - One engine owns the workspace and writes `.engine.json` with its port and bearer token (mode 0600).
 - `openedits mcp` proxies to that engine, so every agent and the UI see one composition.
 - The HTTP server binds to loopback only. It requires the token and rejects foreign Host and Origin headers. The one exception is `/live`, which also accepts `file://`, the origin of the desktop app's page; it still needs the token.
+
+### Browser mode
+
+`openedits serve --web` serves the desktop app's UI as a web page from the engine, for machines where no window can be opened (a Googlebook's Linux Terminal, a headless server).
+
+- The page is the same React UI, built a second time for browsers (`apps/desktop/dist/web`). What the Electron window did with Node is swapped at build time for small stand-ins in `apps/desktop/src/web`: ffmpeg processes for the live preview run beside the engine and stream their frames over a WebSocket (`/web/spawn`), file dialogs become uploads to `<workspace>/uploads`, local files are read through `/web/file` (with range requests), and "Show in file manager" becomes a download.
+- The link carries a token that is kept in `<workspace>/.web-token`. Opening it once stores the token in an HttpOnly, SameSite cookie, so the installed web app keeps working across restarts. Requests must come from the page's own origin and name this machine's loopback as their host; the server still listens on loopback only.
+- The engine's compositor window is never shown, so without a display server it runs with Chromium's headless platform.
 
 ## Desktop app (`apps/desktop`)
 

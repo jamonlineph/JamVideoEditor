@@ -2,7 +2,8 @@ name: Build apps
 
 # Installable apps for every platform:
 #   macOS   .dmg and .zip for Apple Silicon (arm64) and Intel (x64)
-#   Linux   .deb and .AppImage for x64 and arm64 (also Chromebooks with Linux turned on)
+#   Linux   .deb and .AppImage for x64 and arm64 (also Chromebooks with Linux turned on, and
+#           Googlebooks: the .deb carries `openedits-web`, the editor served to the browser)
 #   Windows installer (.exe, x64)
 # Each build bundles FFmpeg and ffprobe, and checks that the packaged engine starts and finds them.
 # The files are attached to the run as artifacts; pushing a tag like v0.1.0 also publishes a release.
@@ -94,6 +95,33 @@ jobs:
           echo "$OUT" | grep -q "^ok   ffmpeg"
           echo "$OUT" | grep -q "^ok   ffprobe"
           echo "$OUT" | grep -q "^ok   H.264 encoder"
+      - name: Install the .deb and check the browser mode a Googlebook uses (no display)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./release/dist/OpenEdits-Studio-*-linux-amd64.deb
+          env -u DISPLAY -u WAYLAND_DISPLAY OPENEDITS_WORKSPACE="$RUNNER_TEMP/web-ws" openedits-web > "$RUNNER_TEMP/web.log" 2>&1 &
+          for i in $(seq 1 30); do grep -q "token=" "$RUNNER_TEMP/web.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/web.log"
+          LINK=$(grep -o "http://localhost:[0-9]*/?token=[0-9a-f]*" "$RUNNER_TEMP/web.log")
+          test "$(curl -s -o /dev/null -w '%{http_code}' "${LINK%%\?*}")" = 401
+          curl -sf -c "$RUNNER_TEMP/jar" -o /dev/null "$LINK"
+          curl -sf -b "$RUNNER_TEMP/jar" "${LINK%%\?*}" | grep -q app.js
+          curl -sf "${LINK%%\?*}manifest.webmanifest" | grep -q OpenEdits
+          # The engine's compositor draws a frame with no display server.
+          engine() {
+            env -u DISPLAY -u WAYLAND_DISPLAY OPENEDITS_WORKSPACE="$RUNNER_TEMP/web-ws" ELECTRON_RUN_AS_NODE=1 OPENEDITS_ELECTRON="/opt/OpenEdits Studio/openedits-studio" \
+              "/opt/OpenEdits Studio/openedits-studio" "/opt/OpenEdits Studio/resources/app/engine/cli.mjs" "$@"
+          }
+          engine call newProject '{}' > /dev/null
+          engine call addText '{"text":"Googlebook"}' > /dev/null
+          engine call captureFrame '{"time":0.5}' | grep '"path"'
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: OpenEdits-Studio-Googlebook
+          path: release/dist/*.deb
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: OpenEdits-Studio-${{ matrix.name }}

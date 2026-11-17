@@ -959,3 +959,19 @@ input[type="color"] {
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
 }
+
+/* Browser build: upload progress for files picked or dropped from this device. */
+.upload-progress {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: #1d2027;
+  border: 1px solid #2c313b;
+  color: #e9ebef;
+  font-size: 13px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}

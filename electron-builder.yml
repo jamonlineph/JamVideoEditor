@@ -50,6 +50,12 @@ linux:
 deb:
   # Text to speech on Linux uses eSpeak NG when it is installed.
   recommends: [espeak-ng]
+  # electron-builder's usual list, plus the sound and graphics-buffer libraries Chromium loads at start:
+  # a minimal Debian (a Googlebook's Linux Terminal, a container) does not come with them.
+  depends: [libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0, libasound2, libgbm1, libdrm2, libxkbcommon0]
+  # `openedits-web`: the editor in a browser, for a Googlebook's Linux Terminal (see README).
+  fpm:
+    - build/linux/openedits-web=/usr/bin/openedits-web
 
 win:
   icon: build/icon.png

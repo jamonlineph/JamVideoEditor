@@ -1,0 +1,21 @@
+#!/bin/sh
+# OpenEdits Studio in a browser: for computers whose Linux has no desktop to open the app's window on
+# but whose browser can reach Linux's localhost. That is a Googlebook (run this in its Terminal, then
+# open the printed link in Chrome), and also a remote Linux box behind an SSH tunnel.
+#
+#   openedits-web                 start the editor and print its link
+#   OPENEDITS_PORT=5000 openedits-web
+APP="/opt/OpenEdits Studio"
+BIN="$APP/openedits-studio"
+RES="$APP/resources"
+if [ ! -x "$BIN" ]; then
+  echo "OpenEdits Studio is not installed in $APP" >&2
+  exit 1
+fi
+# The FFmpeg bundled with the app, unless you point at your own.
+[ -z "$OPENEDITS_FFMPEG" ] && [ -x "$RES/vendor/ffmpeg" ] && export OPENEDITS_FFMPEG="$RES/vendor/ffmpeg"
+[ -z "$OPENEDITS_FFPROBE" ] && [ -x "$RES/vendor/ffprobe" ] && export OPENEDITS_FFPROBE="$RES/vendor/ffprobe"
+# The engine runs on the Node.js inside the app, and uses the app itself as its (never shown) compositor.
+export OPENEDITS_ELECTRON="$BIN"
+export ELECTRON_RUN_AS_NODE=1
+exec "$BIN" "$RES/app/engine/cli.mjs" serve --web --port "${OPENEDITS_PORT:-4417}" "$@"

@@ -47,6 +47,9 @@ export class RenderHostClient {
     this.starting = new Promise<void>((resolve, reject) => {
       // Chromium refuses to start as root with its sandbox on (containers, CI).
       const args = [main ?? "--openedits-render-host", ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [])];
+      // No desktop session (a Linux VM or container, a Googlebook's Terminal, SSH): the compositor window is
+      // never shown anyway, so run Chromium without a display server instead of failing to find one.
+      if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) args.push("--ozone-platform=headless");
       const child = spawn(electron, args, { stdio: ["ignore", "ignore", process.env.OPENEDITS_RENDER_DEBUG ? "inherit" : "ignore", "ipc"], env });
       this.child = child;
       const timer = setTimeout(() => fail(new Error("The render host did not start within 30 s")), 30_000);

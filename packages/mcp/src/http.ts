@@ -7,6 +7,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { AppState, ChangeEvent, EngineHost } from "@openedits/engine";
 import { createMcpServer, runTool } from "./server.js";
 import { allTools, VERSION } from "./registry.js";
+import { createWeb, WEB_COOKIE } from "./web.js";
 
 export interface EngineInfo {
   pid: number;
@@ -40,7 +41,7 @@ export function readEngineInfo(file: string): EngineInfo | undefined {
  * Loopback HTTP server: Streamable HTTP MCP at /mcp, live patch stream + UI command bridge at /live (WebSocket),
  * unauthenticated /health. Requires a bearer token and rejects foreign Host/Origin headers (DNS rebinding).
  */
-export async function startHttpServer(host: EngineHost, opts: { port?: number; token?: string; writeEngineFile?: boolean } = {}): Promise<HttpServerHandle> {
+export async function startHttpServer(host: EngineHost, opts: { port?: number; token?: string; writeEngineFile?: boolean; web?: { root: string; ffmpeg: string } } = {}): Promise<HttpServerHandle> {
   const token = opts.token ?? randomBytes(24).toString("hex");
   const transports = new Map<string, StreamableHTTPServerTransport>();
   let port = opts.port ?? 0;
@@ -49,15 +50,26 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
   const allowedOrigins = () => [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
 
   // The desktop app's page is a local file (Origin "file://"); it may open /live, still with the token.
-  const authorized = (req: http.IncomingMessage, url: URL, opts: { allowFileOrigin?: boolean } = {}): boolean => {
+  const webMode = !!opts.web;
+  // Browser mode is reached through a forwarded port (a Googlebook's Linux Terminal, an SSH tunnel), so
+  // the port in the Host header may differ from ours. The name must still be this machine's loopback,
+  // which is what stops DNS rebinding.
+  const hostOk = (hostHeader: string) => allowedHosts().includes(hostHeader) || (webMode && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(hostHeader));
+  const cookieToken = (req: http.IncomingMessage) => new RegExp(`(?:^|;\\s*)${WEB_COOKIE}=([^;]+)`).exec(req.headers.cookie ?? "")?.[1];
+  const authorized = (req: http.IncomingMessage, url: URL, o: { allowFileOrigin?: boolean } = {}): boolean => {
     const hostHeader = req.headers.host ?? "";
-    if (!allowedHosts().includes(hostHeader)) return false;
+    if (!hostOk(hostHeader)) return false;
     const origin = req.headers.origin;
-    if (origin && !allowedOrigins().includes(origin) && !(opts.allowFileOrigin && origin === "file://")) return false;
+    // In browser mode the page's own origin is allowed: the address it was loaded from, port included.
+    if (origin && !allowedOrigins().includes(origin) && !(o.allowFileOrigin && origin === "file://") && !(webMode && origin === `http://${hostHeader}`)) return false;
+    // Another site on this machine (a different port) must not ride on the browser's cookie.
+    const site = req.headers["sec-fetch-site"];
+    if (site && site !== "same-origin" && site !== "none") return false;
     const auth = req.headers.authorization;
-    const supplied = auth?.startsWith("Bearer ") ? auth.slice(7) : (req.headers["x-openedits-token"] as string | undefined) ?? url.searchParams.get("token") ?? "";
+    const supplied = auth?.startsWith("Bearer ") ? auth.slice(7) : (req.headers["x-openedits-token"] as string | undefined) ?? url.searchParams.get("token") ?? (webMode ? cookieToken(req) : undefined) ?? "";
     return safeEqual(supplied, token);
   };
+  const web = opts.web ? createWeb({ ...opts.web, workspace: host.paths.root, token, authorized }) : null;
 
   const readBody = (req: http.IncomingMessage) =>
     new Promise<unknown>((resolve, reject) => {
@@ -90,9 +102,10 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     try {
       if (url.pathname === "/health" && req.method === "GET") {
-        if (!allowedHosts().includes(req.headers.host ?? "")) return sendJson(res, 403, { error: "forbidden host" });
+        if (!hostOk(req.headers.host ?? "")) return sendJson(res, 403, { error: "forbidden host" });
         return sendJson(res, 200, { ok: true, name: "openedits", version: VERSION, pid: process.pid });
       }
+      if (web && url.pathname !== "/mcp" && hostOk(req.headers.host ?? "") && (await web.handle(req, res, url))) return;
       if (url.pathname !== "/mcp") return sendJson(res, 404, { error: "not found" });
       if (!authorized(req, url)) return sendJson(res, 401, { jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized" }, id: null });
 
@@ -136,6 +149,7 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    if (web?.upgrade(req, socket, head, url)) return;
     if (url.pathname !== "/live" || !authorized(req, url, { allowFileOrigin: true })) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
@@ -218,6 +232,7 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
       transports.clear();
       for (const c of wss.clients) c.terminate();
       wss.close();
+      web?.close();
       await new Promise<void>((r) => server.close(() => r()));
       server.closeAllConnections?.();
       const cur = readEngineInfo(host.paths.engineFile);
