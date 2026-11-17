@@ -136,9 +136,19 @@ jobs:
             unset ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS
           fi
           apps/android/build.sh
-      - name: Let the Android emulator use hardware virtualization
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: OpenEdits-Studio-Googlebook
+          path: |
+            release/dist/*.deb
+            release/dist/*.apk
+          if-no-files-found: error
+      - name: Let the Android emulator use hardware virtualization, and make room for it
         if: runner.os == 'Linux'
         run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL release/dist/*-unpacked
+          df -h /
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
@@ -150,6 +160,8 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_tablet
+          disk-size: 4096M
+          emulator-boot-timeout: 300
           disable-animations: true
           script: mkdir -p release/screenshots && apps/android/emulator-test.sh release/dist/OpenEdits-Studio-*-android.apk release/screenshots
       - uses: actions/upload-artifact@v4
@@ -158,14 +170,6 @@ jobs:
           name: android-emulator-screenshots
           path: release/screenshots/*.png
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'Linux'
-        with:
-          name: OpenEdits-Studio-Googlebook
-          path: |
-            release/dist/*.deb
-            release/dist/*.apk
-          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: OpenEdits-Studio-${{ matrix.name }}
