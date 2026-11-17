@@ -192,9 +192,13 @@ export class Live {
   }
 }
 
+/** True in the browser build (`openedits serve --web`), where the engine serves this page; false in the desktop app. */
+export const WEB = __OPENEDITS_WEB__;
+
 const params = new URLSearchParams(location.search);
-export const WORKSPACE = params.get("workspace") ?? "";
-export const live = new Live(`ws://127.0.0.1:${params.get("port")}/live?token=${params.get("token")}`);
+export const WORKSPACE = WEB ? ((window as unknown as { __openedits?: { workspace?: string } }).__openedits?.workspace ?? "") : (params.get("workspace") ?? "");
+// In the browser the page and /live share an origin, and the sign-in cookie carries the token.
+export const live = new Live(WEB ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live` : `ws://127.0.0.1:${params.get("port")}/live?token=${params.get("token")}`);
 
 export function useLive(): LiveState {
   return useSyncExternalStore(live.subscribe, () => live.state);

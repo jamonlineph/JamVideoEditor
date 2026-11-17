@@ -203,10 +203,10 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     const mediaId = e.dataTransfer.getData("application/x-openedits-media");
     setDropX(null);
     if (!mediaId) {
-      const files = droppedPaths(e);
-      if (!files.length) return;
+      if (!e.dataTransfer.files.length) return;
       e.preventDefault();
-      void dropFiles(files, track, timeAt(e.clientX));
+      const at = timeAt(e.clientX);
+      void droppedPaths(e).then((files) => void (files.length && dropFiles(files, track, at)));
       return;
     }
     e.preventDefault();

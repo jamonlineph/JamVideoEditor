@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ipcRenderer, webUtils } from "electron";
 import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, fontStack, mainTrack, type MediaAsset } from "@openedits/core";
-import { fileUrl, live, selectedElements, useFeatures, useLive, WORKSPACE } from "./live.js";
+import { fileUrl, live, selectedElements, useFeatures, useLive, WEB, WORKSPACE } from "./live.js";
 import { ui, useUi } from "./uiStore.js";
 import { PreviewTile } from "./PreviewTile.js";
 
@@ -22,9 +22,14 @@ export async function importFiles(paths?: string[]) {
   if (files.length) await live.run("importToMediaPanel", { paths: files });
 }
 
-/** Paths of files dropped from the desktop (Electron no longer puts them on File objects). */
-export function droppedPaths(e: React.DragEvent): string[] {
-  return [...e.dataTransfer.files]
+/**
+ * Paths of files dropped from the desktop (Electron no longer puts them on File objects). In the
+ * browser the files are uploaded to the workspace first. Call it before the drop handler returns.
+ */
+export async function droppedPaths(e: React.DragEvent): Promise<string[]> {
+  const files = [...e.dataTransfer.files];
+  if (WEB) return files.length ? ((await ipcRenderer.invoke("upload-files", files)) as string[]) : [];
+  return files
     .map((f) => {
       try {
         return webUtils.getPathForFile(f);
@@ -72,8 +77,7 @@ function MediaTab() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
-        const files = droppedPaths(e);
-        if (files.length) void importFiles(files);
+        void droppedPaths(e).then((files) => void (files.length && importFiles(files)));
       }}
       style={{ minHeight: "100%" }}
     >

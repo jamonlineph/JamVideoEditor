@@ -9,3 +9,4 @@ packages/engine/bin
 *.nosync/
 release/
 build/vendor/
+apps/android/build/

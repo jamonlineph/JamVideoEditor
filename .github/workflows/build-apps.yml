@@ -2,7 +2,8 @@ name: Build apps
 
 # Installable apps for every platform:
 #   macOS   .dmg and .zip for Apple Silicon (arm64) and Intel (x64)
-#   Linux   .deb and .AppImage for x64 and arm64 (also Chromebooks with Linux turned on)
+#   Linux   .deb and .AppImage for x64 and arm64 (also Chromebooks with Linux turned on, and
+#           Googlebooks: the .deb carries `openedits-web`, the editor served to the browser)
 #   Windows installer (.exe, x64)
 # Each build bundles FFmpeg and ffprobe, and checks that the packaged engine starts and finds them.
 # The files are attached to the run as artifacts; pushing a tag like v0.1.0 also publishes a release.
@@ -55,6 +56,7 @@ jobs:
             files: |
               release/dist/*.deb
               release/dist/*.AppImage
+              release/dist/*.apk
           - name: Windows
             os: windows-latest
             tools: "win32:x64"
@@ -94,6 +96,80 @@ jobs:
           echo "$OUT" | grep -q "^ok   ffmpeg"
           echo "$OUT" | grep -q "^ok   ffprobe"
           echo "$OUT" | grep -q "^ok   H.264 encoder"
+      - name: Install the .deb and check the browser mode a Googlebook uses (no display)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./release/dist/OpenEdits-Studio-*-linux-amd64.deb
+          env -u DISPLAY -u WAYLAND_DISPLAY OPENEDITS_WORKSPACE="$RUNNER_TEMP/web-ws" openedits-web > "$RUNNER_TEMP/web.log" 2>&1 &
+          for i in $(seq 1 30); do grep -q "token=" "$RUNNER_TEMP/web.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/web.log"
+          LINK=$(grep -o "http://localhost:[0-9]*/?token=[0-9a-f]*" "$RUNNER_TEMP/web.log")
+          test "$(curl -s -o /dev/null -w '%{http_code}' "${LINK%%\?*}")" = 401
+          curl -sf -c "$RUNNER_TEMP/jar" -o /dev/null "$LINK"
+          PAGE=$(curl -sf -b "$RUNNER_TEMP/jar" "${LINK%%\?*}")
+          echo "$PAGE" | grep -q app.js
+          MANIFEST=$(curl -sf "${LINK%%\?*}manifest.webmanifest")
+          echo "$MANIFEST" | grep -q OpenEdits
+          # The engine's compositor draws a frame with no display server.
+          engine() {
+            env -u DISPLAY -u WAYLAND_DISPLAY OPENEDITS_WORKSPACE="$RUNNER_TEMP/web-ws" ELECTRON_RUN_AS_NODE=1 OPENEDITS_ELECTRON="/opt/OpenEdits Studio/openedits-studio" \
+              "/opt/OpenEdits Studio/openedits-studio" "/opt/OpenEdits Studio/resources/app/engine/cli.mjs" "$@"
+          }
+          engine call newProject '{}' > /dev/null
+          engine call addText '{"text":"Googlebook","start":0,"duration":2}' > /dev/null
+          FRAME=$(engine call captureFrame '{"time":0.5}')
+          echo "$FRAME" | grep '"path"'
+      - name: Build the Googlebook launcher app (.apk)
+        if: runner.os == 'Linux'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          # With the three ANDROID_* secrets set, every build is signed with the same key and
+          # installs over the previous one; otherwise the build makes a throwaway key.
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export ANDROID_KEYSTORE="$RUNNER_TEMP/release.keystore"
+          else
+            unset ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS
+          fi
+          apps/android/build.sh
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: OpenEdits-Studio-Googlebook
+          path: |
+            release/dist/*.deb
+            release/dist/*.apk
+          if-no-files-found: error
+      - name: Let the Android emulator use hardware virtualization, and make room for it
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL release/dist/*-unpacked
+          df -h /
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run the launcher app on an Android emulator against the installed editor
+        if: runner.os == 'Linux'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_tablet
+          disk-size: 4096M
+          emulator-boot-timeout: 300
+          disable-animations: true
+          script: mkdir -p release/screenshots && apps/android/emulator-test.sh release/dist/OpenEdits-Studio-*-android.apk release/screenshots
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux' && always()
+        with:
+          name: android-emulator-screenshots
+          path: release/screenshots/*.png
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: OpenEdits-Studio-${{ matrix.name }}

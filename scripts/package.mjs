@@ -27,6 +27,8 @@ const copy = (from, to) => {
 };
 for (const f of ["main.cjs", "app.js", "index.html", "styles.css"]) copy(`apps/desktop/dist/${f}`, `desktop/${f}`);
 for (const f of ["main.cjs", "page.js", "page.html"]) copy(`packages/render-host/dist/${f}`, `render-host/${f}`);
+// The same UI for a browser, served by the engine in `serve --web` (the openedits-web command on Linux).
+for (const f of ["index.html", "app.js", "styles.css", "manifest.webmanifest", "icon-192.png", "icon-512.png"]) copy(`apps/desktop/dist/web/${f}`, `web/${f}`);
 
 // The engine (HTTP + MCP server, CLI) as one ES module. CommonJS dependencies inside it still call
 // require(), so give the bundle a real one.
