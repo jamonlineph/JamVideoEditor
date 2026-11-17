@@ -106,16 +106,19 @@ jobs:
           LINK=$(grep -o "http://localhost:[0-9]*/?token=[0-9a-f]*" "$RUNNER_TEMP/web.log")
           test "$(curl -s -o /dev/null -w '%{http_code}' "${LINK%%\?*}")" = 401
           curl -sf -c "$RUNNER_TEMP/jar" -o /dev/null "$LINK"
-          curl -sf -b "$RUNNER_TEMP/jar" "${LINK%%\?*}" | grep -q app.js
-          curl -sf "${LINK%%\?*}manifest.webmanifest" | grep -q OpenEdits
+          PAGE=$(curl -sf -b "$RUNNER_TEMP/jar" "${LINK%%\?*}")
+          echo "$PAGE" | grep -q app.js
+          MANIFEST=$(curl -sf "${LINK%%\?*}manifest.webmanifest")
+          echo "$MANIFEST" | grep -q OpenEdits
           # The engine's compositor draws a frame with no display server.
           engine() {
             env -u DISPLAY -u WAYLAND_DISPLAY OPENEDITS_WORKSPACE="$RUNNER_TEMP/web-ws" ELECTRON_RUN_AS_NODE=1 OPENEDITS_ELECTRON="/opt/OpenEdits Studio/openedits-studio" \
               "/opt/OpenEdits Studio/openedits-studio" "/opt/OpenEdits Studio/resources/app/engine/cli.mjs" "$@"
           }
           engine call newProject '{}' > /dev/null
-          engine call addText '{"text":"Googlebook"}' > /dev/null
-          engine call captureFrame '{"time":0.5}' | grep '"path"'
+          engine call addText '{"text":"Googlebook","start":0,"duration":2}' > /dev/null
+          FRAME=$(engine call captureFrame '{"time":0.5}')
+          echo "$FRAME" | grep '"path"'
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
         with:
