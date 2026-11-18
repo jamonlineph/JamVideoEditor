@@ -49,6 +49,28 @@ await build({
   outfile: path.join(webOut, "app.js"),
 });
 fs.copyFileSync(path.join(desktop, "src/ui/styles.css"), path.join(webOut, "styles.css"));
+// The compositor page for engines that render in a browser view instead of a hidden Electron window
+// (OPENEDITS_RENDER_HOST=web, the Android app): it reaches the engine over /web/render-host and runs
+// ffmpeg and file access through the same stand-ins as the UI.
+await build({
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  target: "chrome120",
+  sourcemap: true,
+  logLevel: "warning",
+  conditions: ["@openedits/source"],
+  define: { "process.env.NODE_ENV": define["process.env.NODE_ENV"] },
+  alias: {
+    electron: path.join(host, "src/web/electron.ts"),
+    "node:child_process": path.join(web, "child_process.ts"),
+    "node:fs": path.join(web, "fs.ts"),
+  },
+  inject: [path.join(web, "globals.ts")],
+  entryPoints: [path.join(host, "src/page.ts")],
+  outfile: path.join(webOut, "render-host.js"),
+});
+fs.copyFileSync(path.join(host, "src/web/page.html"), path.join(webOut, "render-host.html"));
 for (const f of ["index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png"]) fs.copyFileSync(path.join(web, f), path.join(webOut, f));
 
 // Apple Vision helper (macOS only): rebuild when the Swift source is newer than the binary.

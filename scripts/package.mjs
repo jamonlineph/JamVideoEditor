@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { bundleEngine } from "./bundle-engine.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stage = path.join(root, "release", "app");
@@ -28,22 +28,10 @@ const copy = (from, to) => {
 for (const f of ["main.cjs", "app.js", "index.html", "styles.css"]) copy(`apps/desktop/dist/${f}`, `desktop/${f}`);
 for (const f of ["main.cjs", "page.js", "page.html"]) copy(`packages/render-host/dist/${f}`, `render-host/${f}`);
 // The same UI for a browser, served by the engine in `serve --web` (the openedits-web command on Linux).
-for (const f of ["index.html", "app.js", "styles.css", "manifest.webmanifest", "icon-192.png", "icon-512.png"]) copy(`apps/desktop/dist/web/${f}`, `web/${f}`);
+for (const f of ["index.html", "app.js", "styles.css", "manifest.webmanifest", "icon-192.png", "icon-512.png", "render-host.html", "render-host.js"]) copy(`apps/desktop/dist/web/${f}`, `web/${f}`);
 
-// The engine (HTTP + MCP server, CLI) as one ES module. CommonJS dependencies inside it still call
-// require(), so give the bundle a real one.
-await build({
-  entryPoints: [path.join(root, "packages/mcp/src/cli.ts")],
-  outfile: path.join(stage, "engine", "cli.mjs"),
-  bundle: true,
-  platform: "node",
-  format: "esm",
-  target: "node22",
-  conditions: ["@openedits/source"],
-  external: ["electron", "bufferutil", "utf-8-validate"],
-  banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
-  logLevel: "warning",
-});
+// The engine (HTTP + MCP server, CLI) as one ES module.
+await bundleEngine(path.join(stage, "engine", "cli.mjs"));
 
 // One binary, two roles: the editor window, or (with a flag) the hidden compositor the engine drives.
 fs.writeFileSync(
