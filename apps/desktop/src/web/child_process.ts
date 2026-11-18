@@ -39,13 +39,28 @@ class RemoteProcess extends Emitter {
   });
   readonly stderr = new Readable();
   readonly stdin = {
-    write: (data: Uint8Array) => this.send(data),
+    // The callback fires once the socket has room again, so a writer that waits for it (the exporter
+    // feeding raw frames to the encoder) cannot outrun the connection.
+    write: (data: Uint8Array, cb?: (err?: Error | null) => void) => {
+      this.send(data);
+      if (cb) this.drained(cb);
+      return true;
+    },
     end: (data?: Uint8Array) => {
       if (data) this.send(data);
       this.send(JSON.stringify({ endStdin: true }));
     },
     on: () => this.stdin,
   };
+
+  private drained(cb: (err?: Error | null) => void) {
+    const check = () => {
+      if (this.done && this.exitCode !== 0) return cb(new Error("ffmpeg stopped"));
+      if (this.ws.readyState === WebSocket.CONNECTING || this.ws.bufferedAmount > 8 * 1024 * 1024) return void setTimeout(check, 4);
+      cb(null);
+    };
+    check();
+  }
 
   constructor(args: string[]) {
     super();

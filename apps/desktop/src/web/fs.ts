@@ -34,10 +34,23 @@ function existsSync(path: string): boolean {
   return value;
 }
 
+/** Bytes of a file (synchronous: a binary response type is not allowed, so read it as x-user-defined text). */
+function readBinary(path: string): Uint8Array {
+  const x = new XMLHttpRequest();
+  x.open("GET", `/web/file?path=${encodeURIComponent(path)}`, false);
+  x.overrideMimeType("text/plain; charset=x-user-defined");
+  x.send();
+  if (x.status !== 200) throw Object.assign(new Error(`Could not read ${path} (${x.status})`), { code: x.status === 404 ? "ENOENT" : "EIO" });
+  const text = x.responseText;
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
+  return out;
+}
+
 const api = {
   existsSync,
   readdirSync: (path: string) => rpc("readdir", path) as string[],
-  readFileSync: (path: string, _encoding?: string) => rpc("readText", path) as string,
+  readFileSync: (path: string, encoding?: string) => (encoding ? (rpc("readText", path) as string) : readBinary(path)),
   mkdirSync: (path: string, _opts?: unknown) => void rpc("mkdir", path),
   rmSync: (path: string, _opts?: unknown) => {
     seen.delete(path);

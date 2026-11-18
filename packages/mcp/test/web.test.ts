@@ -5,6 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { EngineHost, ffmpegPath } from "@openedits/engine";
 import { startHttpServer, type HttpServerHandle } from "../src/index.js";
+import { allTools } from "../src/registry.js";
+import { runTool } from "../src/server.js";
+
+const tools = new Map(allTools().map((t) => [t.name, t]));
 import { ROOT, tempWorkspace, testMedia } from "../../engine/test/media.js";
 
 /** Browser mode (`openedits serve --web`): what the page in a browser relies on. */
@@ -113,5 +117,70 @@ describe("browser mode", () => {
       ws.on("error", reject);
     });
     expect(hello.type).toBe("hello");
+  });
+});
+
+/**
+ * OpenEdits Studio on Android: the compositor is a page in the app's WebView that connects to the
+ * engine (OPENEDITS_RENDER_HOST=web), instead of an Electron window the engine starts. A stand-in
+ * page answers here the way the real one does.
+ */
+describe("render page over a socket (OPENEDITS_RENDER_HOST=web)", () => {
+  let host: EngineHost;
+  let http: HttpServerHandle;
+  const root = path.join(ROOT, "apps/desktop/dist/web");
+
+  beforeAll(async () => {
+    process.env.OPENEDITS_RENDER_HOST = "web";
+    host = EngineHost.create({ workspaceRoot: tempWorkspace("render-page") });
+    http = await startHttpServer(host, { port: 0, web: { root, ffmpeg: ffmpegPath() } });
+  });
+  afterAll(async () => {
+    delete process.env.OPENEDITS_RENDER_HOST;
+    await http.close();
+    host.dispose();
+  });
+
+  const connectPage = (onRequest: (msg: { id: number; method: string; params: Record<string, unknown> }, ws: WebSocket) => void) =>
+    new Promise<WebSocket>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${http.port}/web/render-host`, { headers: { cookie: `openedits_token=${http.token}` } });
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ type: "ready", versions: { chrome: "test" } }));
+        resolve(ws);
+      });
+      ws.on("error", reject);
+      ws.on("message", (data) => onRequest(JSON.parse(String(data)), ws));
+    });
+
+  it("refuses a page without the token", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${http.port}/web/render-host`);
+    const status = await new Promise<number>((resolve) => ws.on("unexpected-response", (_req, res) => resolve(res.statusCode ?? 0)));
+    expect(status).toBe(401);
+  });
+
+  it("renders through the connected page, and through its replacement after it closes", async () => {
+    await runTool(tools.get("newProject")!, {}, { host, source: "test" });
+    await runTool(tools.get("addText")!, { text: "Android", start: 0, duration: 2 }, { host, source: "test" });
+    const answer = (tag: string) => (msg: { id: number; method: string; params: Record<string, unknown> }, ws: WebSocket) => {
+      if (msg.method !== "renderFrames") return;
+      for (const out of msg.params.outputs as string[]) fs.writeFileSync(out, tag);
+      ws.send(JSON.stringify({ id: msg.id, progress: { frame: 1 } }));
+      ws.send(JSON.stringify({ id: msg.id, ok: true, result: { width: msg.params.width, height: msg.params.height, warnings: [] } }));
+    };
+    const first = await connectPage(answer("first"));
+    const r1 = (await runTool(tools.get("captureFrame")!, { timeSeconds: 0.5 }, { host, source: "test" })) as { ok: true; result: { path: string } };
+    expect(r1.ok).toBe(true);
+    expect(fs.readFileSync(r1.result.path, "utf8")).toBe("first");
+
+    // The WebView reloads (or the app restarts it): the next request waits for the new page.
+    first.close();
+    await new Promise((r) => setTimeout(r, 100));
+    const pending = runTool(tools.get("captureFrame")!, { timeSeconds: 0.5 }, { host, source: "test" }) as Promise<{ ok: true; result: { path: string } }>;
+    await new Promise((r) => setTimeout(r, 200));
+    const second = await connectPage(answer("second"));
+    const r2 = await pending;
+    expect(r2.ok).toBe(true);
+    expect(fs.readFileSync(r2.result.path, "utf8")).toBe("second");
+    second.close();
   });
 });

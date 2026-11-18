@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- OpenEdits Studio for Googlebook: a window onto the editor that runs in the Linux Terminal
-     (the .deb's `openedits-web`). The Googlebook passes the Terminal's localhost through to apps. -->
+<!-- OpenEdits Studio for Android and Googlebooks: the whole editor in one app. The engine (Node.js,
+     FFmpeg) runs on the device and serves the editor's page to the app's WebViews over loopback. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.openedits.studio">
+    <!-- Loopback sockets between the WebViews and the engine need it; nothing is sent elsewhere
+         unless you turn on the optional Claude features. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Voiceover recording. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Keeps the engine (and a running export) alive while the window is in the background. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
+    <!-- extractNativeLibs: the engine's programs are run from the native library folder, so they must be real files there. -->
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
@@ -16,6 +24,8 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:hardwareAccelerated="true"
         android:resizeableActivity="true"
+        android:extractNativeLibs="true"
+        android:largeHeap="true"
         android:allowBackup="false">
         <activity
             android:name=".MainActivity"
@@ -27,14 +37,25 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- The link `openedits-web` prints can be opened with this app. -->
+            <!-- "Share" and "Open with" for videos, audio and pictures: they are imported into the editor. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="http" android:host="localhost" />
-                <data android:scheme="http" android:host="127.0.0.1" />
+                <data android:scheme="content" />
+                <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".EngineService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

@@ -4,7 +4,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { AppState, ChangeEvent, EngineHost } from "@openedits/engine";
+import { attachRenderPage, type AppState, type ChangeEvent, type EngineHost } from "@openedits/engine";
 import { createMcpServer, runTool } from "./server.js";
 import { allTools, VERSION } from "./registry.js";
 import { createWeb, WEB_COOKIE } from "./web.js";
@@ -147,9 +147,37 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
 
   // ---- /live: state patches out, tool calls in (the desktop UI uses the same tool handlers as agents).
   const wss = new WebSocketServer({ noServer: true });
+  const renderWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (web?.upgrade(req, socket, head, url)) return;
+    // Browser mode: the compositor page (a WebView on Android, see OPENEDITS_RENDER_HOST=web) connects here.
+    if (web && url.pathname === "/web/render-host") {
+      if (!authorized(req, url)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      renderWss.handleUpgrade(req, socket, head, (ws) => {
+        const link = attachRenderPage({
+          send: (text, cb) => ws.send(text, cb),
+          close: () => ws.close(),
+          get open() {
+            return ws.readyState === ws.OPEN;
+          },
+        });
+        ws.on("message", (data) => {
+          try {
+            link.message(JSON.parse(String(data)));
+          } catch {
+            /* not JSON: ignore */
+          }
+        });
+        ws.on("error", () => ws.terminate());
+        ws.on("close", () => link.closed());
+      });
+      return;
+    }
     if (url.pathname !== "/live" || !authorized(req, url, { allowFileOrigin: true })) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
@@ -232,6 +260,8 @@ export async function startHttpServer(host: EngineHost, opts: { port?: number; t
       transports.clear();
       for (const c of wss.clients) c.terminate();
       wss.close();
+      for (const c of renderWss.clients) c.terminate();
+      renderWss.close();
       web?.close();
       await new Promise<void>((r) => server.close(() => r()));
       server.closeAllConnections?.();

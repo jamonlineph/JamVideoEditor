@@ -13,7 +13,7 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 | Mac with Apple Silicon (M1 and later) | `OpenEdits-Studio-<version>-mac-arm64.dmg` | Open the .dmg and drag **OpenEdits Studio** to Applications. |
 | Mac with an Intel processor | `OpenEdits-Studio-<version>-mac-x64.dmg` | Same. |
 | Chromebook or Linux PC (Intel/AMD) | `OpenEdits-Studio-<version>-linux-amd64.deb` (or `-x86_64.AppImage`) | See *Chromebook* below; on other Linux, `sudo apt install ./OpenEdits-Studio-…-amd64.deb`. |
-| Googlebook | The same Linux `.deb`: `-amd64.deb` on Intel/AMD models, `-arm64.deb` on ARM models | See *Googlebook* below: install it in the Terminal, run `openedits-web`, and edit in Chrome. |
+| Googlebook, Android tablet or phone | `OpenEdits-Studio-<version>-android.apk` (one file for ARM and Intel/AMD) | Open the file and allow installing it. Everything runs inside the app: see *Googlebook and Android* below. |
 | Chromebook or Linux on ARM | `OpenEdits-Studio-<version>-linux-arm64.deb` (or `-arm64.AppImage`) | Same. |
 | Windows | `OpenEdits-Studio-<version>-win-x64.exe` | Run the installer. |
 
@@ -21,19 +21,44 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 
 **Chromebook.** Turn on Linux (**Settings → About ChromeOS → Developers → Linux development environment**), download the `.deb` for your Chromebook's processor (most are Intel/AMD → `amd64`; ARM Chromebooks such as MediaTek models → `arm64`), then double-click it in the Files app and choose **Install**. OpenEdits Studio then appears in the launcher under *Linux apps*. Video preview and export run on the processor, so expect them to be slower than on a Mac.
 
-**Googlebook.** A Googlebook runs Android apps and has a Linux Terminal (a Debian virtual machine). That Terminal does not open Linux app windows on the Googlebook's desktop yet, but it does pass `localhost` through to the Googlebook's browser. So on a Googlebook the editor runs in the Terminal and you use it in Chrome: the same editor, the same engine, the same exports.
+**Googlebook and Android.** Install `OpenEdits-Studio-<version>-android.apk`: open the file on the Googlebook (or tablet, or phone) and allow installing apps from that source when asked. Then start **OpenEdits Studio** from the launcher. That is all: no Linux Terminal, no `.deb`, no account.
+
+- The app contains the whole editor: the engine, FFmpeg and ffprobe, eSpeak NG for text to speech, and the same UI and compositor as the desktop app. One `.apk` covers 64-bit ARM (`arm64-v8a`) and Intel/AMD (`x86_64`) devices, Android 10 and later.
+- **Importing:** *Import* and *Start from videos* open Android's file picker. You can also **Share** videos, music or pictures to OpenEdits Studio from Files, Photos or any other app (or *Open with* for videos): they land in the Home screen's *Inbox*, and in the open project.
+- **Exports** are kept in the app's workspace; the export dialog's **Download** button copies a video to *Movies/OpenEdits Studio* (it then shows up in Photos and Files), audio to *Music* and pictures to *Pictures*.
+- **Voiceovers** use the device's microphone (the app asks the first time).
+- **Exports keep going in the background**: while the editor is open the app shows a quiet notification, which keeps Android from pausing it.
+- What is not in the app: transcripts and captions from speech (whisper.cpp and its model are not bundled) and the Apple Vision features (macOS only). The editor greys these out.
+- Preview and export run on the device's processor and GPU. Long 4K exports take a while on a small device.
+
+<details><summary>How the Android app works</summary>
+
+The app is a thin Android shell (`apps/android`, three Java classes, no libraries) around the same engine the desktop apps run:
+
+- `Engine.java` starts `node cli.mjs serve --web` with Node.js built for Android, and waits for its link. Android only lets apps run files installed from the APK's `lib/<abi>/` folder under `lib*.so` names, so every program and library ships as `lib_<name>.so`; at start-up the app recreates their real names as symlinks (`files/runtime/bin`, `files/runtime/lib`) and points `PATH` and `LD_LIBRARY_PATH` there. The engine's JavaScript and the UI are unpacked from the APK's assets when the app is installed or updated.
+- `MainActivity.java` shows the editor's page in a WebView. A second WebView, behind it, runs the compositor page (`render-host.html`). The engine runs with `OPENEDITS_RENDER_HOST=web`, so instead of starting a hidden Electron window it waits for that page to connect over `/web/render-host` and sends it the same render requests. Previews, frame captures and exports all go through it.
+- `EngineService.java` is a foreground service that keeps the engine running while the window is in the background.
+
+The native programs come from [Termux](https://termux.dev)'s package repository (`nodejs-lts`, `ffmpeg`, `espeak` and the libraries they need), which builds them for Android's own C library. `apps/android/fetch-runtime.mjs` downloads them and works out which libraries each program loads.
+
+Build it yourself with the Android SDK (build-tools and an `android-34`+ platform; no Gradle):
+
+```bash
+ANDROID_HOME=/path/to/android-sdk apps/android/build.sh
+```
+
+The `.apk` lands in `release/dist`. Set `ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` to sign with your own key, so new versions install over old ones (the CI workflow reads them from secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`). Without them each build has a throwaway key, and installing a newer build means uninstalling the old one first. `ANDROID_ABIS=arm64-v8a` builds a smaller APK for ARM only. CI installs every build on an Android emulator and edits, renders and exports a video with it (`apps/android/emulator-test.sh`).
+
+</details>
+
+**Googlebook, the Linux way (optional).** The editor also runs in a Googlebook's Linux Terminal and opens in Chrome, if you prefer that:
 
 1. Open the **Terminal** app (turn on the Linux Terminal in the Googlebook's settings first if you have not used it yet).
-2. Find out which file you need: `dpkg --print-architecture` prints `amd64` or `arm64`. Download the matching `OpenEdits-Studio-<version>-linux-<amd64|arm64>.deb` and put it where the Terminal can see it (the Terminal's own files, or a folder you have shared with it).
+2. Find out which file you need: `dpkg --print-architecture` prints `amd64` or `arm64`. Download the matching `OpenEdits-Studio-<version>-linux-<amd64|arm64>.deb` and put it where the Terminal can see it.
 3. Install it from the folder the file is in: `sudo apt update && sudo apt install ./OpenEdits-Studio-*.deb`
-4. Start the editor: `openedits-web`. It prints a link like `http://localhost:4417/?token=…`. Open that link in Chrome on the Googlebook. If the Googlebook asks whether to allow the port, allow it.
-5. Optional, for an OpenEdits Studio icon in the launcher and its own window, either:
-   - install `OpenEdits-Studio-<version>-android.apk` (open the file on the Googlebook and allow installing it), start it, paste the link from step 4 once and press **Open**; or
-   - in Chrome's menu choose **Cast, save and share → Install page as app**.
+4. Start the editor: `openedits-web`. It prints a link like `http://localhost:4417/?token=…`. Open that link in Chrome on the Googlebook. If the Googlebook asks whether to allow the port, allow it. For an icon in the launcher, choose **Cast, save and share → Install page as app** in Chrome's menu.
 
-   Either way the Terminal has to be running `openedits-web` whenever you edit; the link is only needed the first time. The `.apk` is the window, not the editor: it shows the editor that the `.deb` runs, with a file picker for imports, the microphone for voiceovers, and exports saved to Downloads. It does nothing without the `.deb`. It is built from `apps/android` with `apps/android/build.sh` (the Android SDK's command-line tools; no Gradle).
-
-In Chrome, **Import** uploads files from the Googlebook into the editor's workspace (`~/Videos/OpenEdits/uploads` inside Linux), and a finished export has a **Download** button that saves it to the Googlebook's Downloads. Voiceover recording uses the Googlebook's microphone through Chrome. Preview and export run on the processor inside the Linux virtual machine, so give the Terminal as much memory as you can in its settings and expect long exports to take a while. `OPENEDITS_PORT=5000 openedits-web` uses another port. The engine, FFmpeg and the compositor are desktop programs, which is why they stay in Linux rather than inside the `.apk`.
+In Chrome, **Import** uploads files from the Googlebook into the editor's workspace (`~/Videos/OpenEdits/uploads` inside Linux), and a finished export has a **Download** button that saves it to the Googlebook's Downloads. Give the Terminal as much memory as you can in its settings. `OPENEDITS_PORT=5000 openedits-web` uses another port.
 
 The same command works on any Linux machine without a desktop, for example a server reached with `ssh -L 4417:localhost:4417 …`.
 
@@ -85,7 +110,7 @@ claude mcp add openedits -- node "$PWD/packages/mcp/dist/cli.js" mcp   # run fro
 
 | Command | What it does |
 | --- | --- |
-| `openedits serve [--port N] [--web]` | Runs the engine. MCP over Streamable HTTP is at `/mcp`, live patches and UI calls go over the WebSocket at `/live`, and `/health` reports status. With `--web` it also serves the editor to a browser on the same machine and prints its link (this is what `openedits-web` runs). |
+| `openedits serve [--port N] [--web]` | Runs the engine. MCP over Streamable HTTP is at `/mcp`, live patches and UI calls go over the WebSocket at `/live`, and `/health` reports status. With `--web` it also serves the editor to a browser on the same machine and prints its link (this is what `openedits-web` and the Android app run). With `OPENEDITS_RENDER_HOST=web` the compositor is a page (`/render-host.html`) that connects to the engine, instead of a hidden Electron window it starts. |
 | `openedits mcp` | Starts a stdio MCP server. It joins a running engine if there is one; otherwise it hosts one, which other clients can join over HTTP. |
 | `openedits call <tool> '<json>'` | Calls a single tool and prints the JSON result. |
 | `openedits repl` | Interactive prompt; each line is `<tool> <json>`. |
