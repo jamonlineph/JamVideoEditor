@@ -87,6 +87,8 @@ public class MainActivity extends Activity implements Engine.Listener {
     private int port;
     private String token;
     private boolean editorShown;
+    /** The address the compositor page was loaded from; it is loaded once per engine, not on every page event. */
+    private String rendererLoaded;
     private int probes;
     /** Files shared to the app before the editor was up. */
     private final List<Uri> pendingShares = new ArrayList<>();
@@ -186,7 +188,7 @@ public class MainActivity extends Activity implements Engine.Listener {
 
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                if (request.isForMainFrame()) handler.postDelayed(MainActivity.this::loadRenderer, 2000);
+                if (request.isForMainFrame()) handler.postDelayed(MainActivity.this::reloadRenderer, 2000);
             }
 
             @Override
@@ -223,6 +225,7 @@ public class MainActivity extends Activity implements Engine.Listener {
         }
         web = null;
         renderer = null;
+        rendererLoaded = null;
     }
 
     private void configure(WebView v) {
@@ -240,10 +243,22 @@ public class MainActivity extends Activity implements Engine.Listener {
         CookieManager.getInstance().setAcceptCookie(true);
     }
 
+    /**
+     * Opens the compositor page unless it is already open for this engine. The editor's page reports
+     * "finished" again on its own in-page navigations; reloading the compositor then would cut off a render.
+     */
     private void loadRenderer() {
         if (renderer == null || port <= 0) return;
+        String url = base() + "render-host.html";
+        if (url.equals(rendererLoaded)) return;
+        rendererLoaded = url;
         Log.i(TAG, "loading the compositor page");
-        renderer.loadUrl(base() + "render-host.html");
+        renderer.loadUrl(url);
+    }
+
+    private void reloadRenderer() {
+        rendererLoaded = null;
+        loadRenderer();
     }
 
     /** All WebViews share one renderer process: if it dies, start both pages again. */
