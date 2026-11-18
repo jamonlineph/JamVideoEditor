@@ -12,7 +12,8 @@ tmp="${RUNNER_TEMP:-/tmp}"
 app=app.openedits.studio
 
 dump() {
-  adb logcat -d -s OpenEdits:V OpenEdits/engine:V OpenEdits/render:V OpenEdits/page:V chromium:W cr_AwContents:W AndroidRuntime:E DEBUG:E linker:V libc:E | tail -200 >&2 || true
+  sleep 3
+  adb logcat -d -s OpenEdits:V OpenEdits/engine:V OpenEdits/render:V OpenEdits/page:V chromium:W cr_AwContents:W ActivityManager:I lowmemorykiller:I AndroidRuntime:E DEBUG:E linker:V libc:E | tail -200 >&2 || true
   adb exec-out screencap -p >"$shots/android-failure.png" || true
 }
 trap 'echo "emulator test failed" >&2; dump' ERR

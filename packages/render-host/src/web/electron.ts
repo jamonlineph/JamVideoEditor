@@ -21,10 +21,13 @@ function connect() {
     } catch {
       return;
     }
+    const m = msg as { id?: unknown; method?: string };
+    if (m.method) console.info(`render request #${m.id} ${m.method}`);
     for (const h of handlers) h(null, msg);
   };
   // The engine restarted or replaced this page: start over with a fresh page (and a fresh compositor).
-  socket.onclose = () => {
+  socket.onclose = (ev) => {
+    console.warn(`render socket closed (${ev.code} ${ev.reason || ""})`);
     document.title = "OpenEdits render host (reconnecting)";
     setTimeout(() => location.reload(), 1500);
   };
@@ -32,6 +35,8 @@ function connect() {
 
 export const ipcRenderer = {
   send(_channel: string, msg: unknown) {
+    const r = msg as { id?: unknown; ok?: boolean; error?: string };
+    if (r.ok !== undefined) console.info(`render answer #${r.id} ${r.ok ? "ok" : `failed: ${r.error}`}`);
     const text = JSON.stringify(msg);
     if (ws?.readyState === WebSocket.OPEN) ws.send(text);
     else outbox.push(text);

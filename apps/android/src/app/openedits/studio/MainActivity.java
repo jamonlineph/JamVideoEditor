@@ -191,7 +191,7 @@ public class MainActivity extends Activity implements Engine.Listener {
 
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-                return recoverFromCrash();
+                return recoverFromCrash(detail);
             }
         });
         renderer.setWebChromeClient(new WebChromeClient() {
@@ -201,8 +201,10 @@ public class MainActivity extends Activity implements Engine.Listener {
                 return true;
             }
         });
-        // Behind the editor and never seen, but attached and "visible", so Android does not throttle it.
-        root.addView(renderer, 0, match());
+        // Behind the editor and never seen, but attached and "visible", so Android does not throttle it. One
+        // pixel is enough: the compositor draws into its own offscreen canvas, and a full-size view would hold
+        // tile memory for a page nobody looks at.
+        root.addView(renderer, 0, new FrameLayout.LayoutParams(1, 1));
 
         web = new WebView(this);
         configure(web);
@@ -245,8 +247,8 @@ public class MainActivity extends Activity implements Engine.Listener {
     }
 
     /** All WebViews share one renderer process: if it dies, start both pages again. */
-    private boolean recoverFromCrash() {
-        Log.w(TAG, "WebView renderer is gone; reloading the editor");
+    private boolean recoverFromCrash(RenderProcessGoneDetail detail) {
+        Log.w(TAG, "WebView renderer is gone (crashed: " + detail.didCrash() + ", priority at exit: " + detail.rendererPriorityAtExit() + "); reloading the editor");
         destroyWebViews();
         createWebViews();
         editorShown = false;
@@ -299,7 +301,7 @@ public class MainActivity extends Activity implements Engine.Listener {
 
         @Override
         public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-            return recoverFromCrash();
+            return recoverFromCrash(detail);
         }
     }
 
