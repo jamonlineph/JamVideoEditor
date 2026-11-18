@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { compositionDuration, mainTrack, clipBoundaries } from "@openedits/core";
 import { FILE_MANAGER, live, selectedElements, useLive, WEB } from "./live.js";
 import { ui, useUi } from "./uiStore.js";
@@ -9,12 +9,50 @@ import { Timeline } from "./Timeline.js";
 import { actionFor, type ShortcutMapId } from "./shortcuts.js";
 import { recorder } from "./recorder.js";
 
+const compactEditor = "(max-width: 1080px)";
+type SidePanel = "library" | "inspector";
+
 export function Editor() {
   const s = useLive();
-  const u = useUi();
+  const showGuides = useUi("showGuides");
+  const recordingTools = useUi("recorder");
+  const exportOpen = useUi("exportOpen");
   const project = s.project!;
   const viewport = useRef<ViewportApi>(null);
   const [shortcutMap, setShortcutMap] = useState<ShortcutMapId>("edits");
+  const [compact, setCompact] = useState(() => matchMedia(compactEditor).matches);
+  const [compactPanel, setCompactPanel] = useState<SidePanel | null>(null);
+  const [widePanels, setWidePanels] = useState({ library: true, inspector: true });
+  const libraryOpen = compact ? compactPanel === "library" : widePanels.library;
+  const inspectorOpen = compact ? compactPanel === "inspector" : widePanels.inspector;
+  const [job, setJob] = useState<ExportJob | null>(null);
+  const [exportPending, setExportPending] = useState(false);
+  const libraryToggle = useRef<HTMLButtonElement>(null);
+  const exportActive = job?.status === "running" || job?.status === "queued";
+  const seek = useCallback((time: number) => viewport.current?.player?.seek(time), []);
+
+  useEffect(() => {
+    const media = matchMedia(compactEditor);
+    const update = () => setCompact(media.matches);
+    media.addEventListener("change", update);
+    update();
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  function togglePanel(panel: SidePanel) {
+    if (compact) setCompactPanel((current) => current === panel ? null : panel);
+    else setWidePanels((current) => ({ ...current, [panel]: !current[panel] }));
+  }
+
+  const runExport = async (tool: "export" | "cancelRender", args: Record<string, unknown>) => {
+    setExportPending(true);
+    try {
+      const result = await live.run<ExportJob>(tool, args);
+      if (result) setJob(result);
+    } finally {
+      setExportPending(false);
+    }
+  };
 
   useEffect(() => {
     void live.call<{ shortcutMap: ShortcutMapId }>("getSettings").then((r) => setShortcutMap(r.shortcutMap)).catch(() => {});
@@ -25,7 +63,34 @@ export function Editor() {
       if (command === "stopRecording") return recorder.stop();
       throw new Error(`Unknown request ${command}`);
     });
+    return () => ui.set({ exportOpen: false, recorder: false });
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void live.call<ExportJob>("exportStatus").then((latest) => {
+      if (mounted) setJob((current) => current ?? latest);
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!exportActive || !job) return;
+    const { jobId } = job;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const status = await live.call<ExportJob>("exportStatus", { jobId }).catch(() => null);
+      if (!active) return;
+      if (status) setJob((current) => current?.jobId === jobId && (current.status === "running" || current.status === "queued") ? status : current);
+      if (!status || status.status === "queued" || status.status === "running") timer = setTimeout(poll, 750);
+    };
+    timer = setTimeout(poll, 750);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [exportActive, job?.jobId]);
 
   // Follow playhead moves made by agents (or another window) while not playing.
   const enginePlayhead = s.appState?.playheadSeconds;
@@ -37,8 +102,11 @@ export function Editor() {
   // Keyboard shortcuts (ignored while typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      const t = e.target instanceof Element ? e.target : null;
+      if (ui.get().exportOpen || e.defaultPrevented) return;
+      if (e.key === "Escape") setCompactPanel(null);
+      if (t?.closest("input, textarea, select, [contenteditable=true]")) return;
+      if ((e.key === " " || e.key === "Enter") && t?.closest("button, summary")) return;
       const action = actionFor(shortcutMap, e);
       if (!action) return;
       e.preventDefault();
@@ -91,7 +159,7 @@ export function Editor() {
           ui.set({ pxPerSecond: Math.min(800, ui.get().pxPerSecond * 1.25) });
           break;
         case "zoomOut":
-          ui.set({ pxPerSecond: Math.max(4, ui.get().pxPerSecond / 1.25) });
+          ui.set({ pxPerSecond: Math.max(0.05, ui.get().pxPerSecond / 1.25) });
           break;
         case "toggleSnapping":
           void live.run("setRippleTiers", { snappingEnabled: !p.rippleSettings.snappingEnabled });
@@ -128,132 +196,153 @@ export function Editor() {
 
   return (
     <>
-      <div className="titlebar">
-        <button className="ghost" onClick={() => void live.run("closeProject")} title="Back to projects">
-          ‹ Projects
-        </button>
-        <span className="name">{project.name}</span>
-        <span className="muted small">
-          {project.canvas.aspectRatio} · {project.canvas.resolution} · {project.canvas.fps} fps
-        </span>
-        <div className="spacer" />
-        {agentActive && (
-          <span className="small" style={{ color: "var(--ok)" }} title={s.lastChange!.label}>
-            ● {s.lastChange!.source.replace(/^mcp:/, "")} is editing
+      <div className="editor-shell">
+        <header className="titlebar editor-titlebar">
+          <button className="ghost back-projects" onClick={() => void live.run("closeProject")} aria-label="Back to projects" title="Back to projects">
+            ‹ <span>Projects</span>
+          </button>
+          <div className="project-heading">
+            <span className="name" title={project.name}>{project.name}</span>
+            <span className="project-format muted small">{project.canvas.resolution} · {project.canvas.fps} fps</span>
+          </div>
+          <div className="spacer" />
+          <span className="connection-status" role="status" title={s.lastChange?.label}>
+            <i className={`status-dot ${s.connected ? "" : "off"}`} />
+            <span>{!s.connected ? "Reconnecting" : agentActive ? `${s.lastChange!.source.replace(/^mcp:/, "")} is editing` : "Engine connected"}</span>
           </span>
-        )}
-        <button className="icon" title="Undo" onClick={() => void live.run("undo")}>
-          ↶
-        </button>
-        <button className="icon" title="Redo" onClick={() => void live.run("redo")}>
-          ↷
-        </button>
-        <select value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })} title="Canvas aspect ratio">
-          {["9:16", "16:9", "1:1", "4:5"].map((a) => (
-            <option key={a}>{a}</option>
-          ))}
-        </select>
-        <button className={u.showGuides ? "on" : ""} onClick={() => ui.set({ showGuides: !u.showGuides })} title="10% grid guides">
-          Grid
-        </button>
-        <button
-          className={s.appState?.teleprompterOpen ? "on" : ""}
-          onClick={() => void live.run("openTeleprompter", { open: !s.appState?.teleprompterOpen })}
-          title="Teleprompter"
-        >
-          Prompter
-        </button>
-        <button className={u.recorder ? "on" : ""} onClick={() => ui.set({ recorder: !u.recorder })} title="Record voiceover">
-          🎙 Voiceover
-        </button>
-        <button className="primary" onClick={() => ui.set({ exportOpen: true })}>
-          Export
-        </button>
+          <button className="primary" onClick={() => ui.set({ exportOpen: true })}>
+            {exportActive ? `Export ${Math.round(job.progress * 100)}%` : "Export"}
+          </button>
+        </header>
+        <nav className="editor-toolbar" aria-label="Editor tools">
+          <div className="segmented">
+            <button ref={libraryToggle} className={libraryOpen ? "on" : ""} aria-pressed={libraryOpen} aria-controls="editor-library" onClick={() => togglePanel("library")}>Library</button>
+            <button className={inspectorOpen ? "on" : ""} aria-pressed={inspectorOpen} aria-controls="editor-inspector" onClick={() => togglePanel("inspector")}>Inspector</button>
+          </div>
+          <div className="editor-history">
+            <button className="icon ghost" aria-label="Undo" title="Undo" onClick={() => void live.run("undo")}>↶</button>
+            <button className="icon ghost" aria-label="Redo" title="Redo" onClick={() => void live.run("redo")}>↷</button>
+          </div>
+          <div className="toolbar-space" />
+          <select value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })} aria-label="Canvas aspect ratio" title="Canvas aspect ratio">
+            {["9:16", "16:9", "1:1", "4:5"].map((a) => <option key={a}>{a}</option>)}
+          </select>
+          <details className="editor-more" onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
+          }} onKeyDown={(e) => {
+            if (e.key !== "Escape" || !e.currentTarget.open) return;
+            e.preventDefault();
+            e.currentTarget.open = false;
+            e.currentTarget.querySelector("summary")?.focus();
+          }}>
+            <summary>Tools</summary>
+            <div className="editor-menu">
+              <button aria-pressed={showGuides} onClick={() => ui.set({ showGuides: !showGuides })}>Grid guides</button>
+              <button aria-pressed={Boolean(s.appState?.teleprompterOpen)} onClick={(e) => {
+                e.currentTarget.closest("details")!.open = false;
+                setCompactPanel(null);
+                void live.run("openTeleprompter", { open: !s.appState?.teleprompterOpen });
+              }}>Teleprompter</button>
+              <button aria-pressed={recordingTools} onClick={(e) => {
+                e.currentTarget.closest("details")!.open = false;
+                setCompactPanel(null);
+                ui.set({ recorder: !recordingTools });
+              }}>Voiceover</button>
+            </div>
+          </details>
+        </nav>
+        <div className={`editor${libraryOpen ? " with-library" : ""}${inspectorOpen ? " with-inspector" : ""}`}>
+          <aside id="editor-library" className="editor-library" aria-label="Library" hidden={!libraryOpen}><Dock /></aside>
+          <Viewport ref={viewport} onOpenLibrary={() => {
+            if (compact) setCompactPanel("library");
+            else setWidePanels((current) => ({ ...current, library: true }));
+            libraryToggle.current?.focus();
+          }} />
+          <aside id="editor-inspector" className="editor-inspector" aria-label="Inspector" hidden={!inspectorOpen}>
+            {inspectorOpen && <Inspector key={selected.map((e) => e.id).join(",")} />}
+          </aside>
+          {compact && compactPanel && <button className="panel-scrim" tabIndex={-1} aria-label={`Close ${compactPanel}`} onClick={() => setCompactPanel(null)} />}
+          <Timeline onSeek={seek} />
+        </div>
       </div>
-      <div className="editor">
-        <Dock />
-        <Viewport ref={viewport} />
-        <Inspector key={selected.map((e) => e.id).join(",")} />
-        <Timeline onSeek={(t) => viewport.current?.player?.seek(t)} />
-      </div>
-      {u.exportOpen && <ExportDialog onClose={() => ui.set({ exportOpen: false })} />}
+      {exportOpen && <ExportDialog job={job} pending={exportPending} runJob={runExport} onClose={() => ui.set({ exportOpen: false })} />}
     </>
   );
 }
 
-function ExportDialog({ onClose }: { onClose: () => void }) {
+type ExportJob = { jobId: string; status: string; progress: number; message?: string; output?: { path: string }; error?: { message: string } };
+
+function ExportDialog({ job, pending, runJob, onClose }: {
+  job: ExportJob | null;
+  pending: boolean;
+  runJob: (tool: "export" | "cancelRender", args: Record<string, unknown>) => Promise<void>;
+  onClose: () => void;
+}) {
   const s = useLive();
   const settings = s.project!.exportSettings;
-  const [job, setJob] = useState<{ jobId: string; status: string; progress: number; message?: string; output?: { path: string }; error?: { message: string } } | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const working = job?.status === "queued" || job?.status === "running";
   useEffect(() => {
-    if (!job || job.status !== "running") return;
-    const t = setInterval(async () => {
-      const r = await live.call<typeof job>("exportStatus", { jobId: job!.jobId }).catch(() => null);
-      if (r) setJob(r);
-    }, 500);
-    return () => clearInterval(t);
-  }, [job?.jobId, job?.status]);
+    dialog.current?.showModal();
+  }, []);
   const set = (patch: Record<string, unknown>) => void live.run("setExportSettings", patch);
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Export</h3>
-        <div className="field wide">
-          <label>Resolution</label>
+    <dialog className="dialog export-dialog" ref={dialog} onClose={onClose} aria-labelledby="export-title">
+      <h3 id="export-title">Export video</h3>
+      <fieldset disabled={working || pending}>
+        <label className="field wide">
+          <span>Resolution</span>
           <select value={settings.resolution} onChange={(e) => set({ resolution: e.target.value })}>
             {["720p", "1080p", "4K"].map((r) => (
               <option key={r}>{r}</option>
             ))}
           </select>
-        </div>
-        <div className="field wide">
-          <label>Frame rate</label>
+        </label>
+        <label className="field wide">
+          <span>Frame rate</span>
           <select value={settings.fps} onChange={(e) => set({ fps: Number(e.target.value) })}>
             {[24, 25, 30, 50, 60].map((r) => (
               <option key={r}>{r}</option>
             ))}
           </select>
-        </div>
-        <div className="field wide">
-          <label>Codec</label>
+        </label>
+        <label className="field wide">
+          <span>Codec</span>
           <select value={settings.codec} onChange={(e) => set({ codec: e.target.value })}>
             <option value="h264">H.264</option>
             <option value="hevc">HEVC</option>
             <option value="prores">ProRes</option>
           </select>
-        </div>
-        <div className="field wide">
-          <label>Quality</label>
+        </label>
+        <label className="field wide">
+          <span>Quality</span>
           <select value={settings.quality} onChange={(e) => set({ quality: e.target.value })}>
             {["low", "medium", "high", "max"].map((r) => (
               <option key={r}>{r}</option>
             ))}
           </select>
-        </div>
+        </label>
         <div className="field wide">
-          <label>Captions</label>
+          <span>Captions</span>
           <label className="row">
             <input type="checkbox" checked={settings.burnInCaptions} onChange={(e) => set({ burnInCaptions: e.target.checked })} /> Burn in
           </label>
         </div>
-        {job && (
-          <>
-            <div className="progress">
-              <div style={{ width: `${Math.round(job.progress * 100)}%` }} />
-            </div>
-            <div className="muted small">
-              {job.status === "done" ? `Saved to ${job.output?.path}` : job.status === "failed" ? job.error?.message : job.message ?? "Starting…"}
-            </div>
-          </>
-        )}
-        <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
-          {job?.status === "done" && <button onClick={() => void import("electron").then(({ ipcRenderer }) => ipcRenderer.invoke("reveal", job.output!.path))}>{WEB ? "Download" : `Show in ${FILE_MANAGER}`}</button>}
-          <button onClick={onClose}>Close</button>
-          <button className="primary" disabled={job?.status === "running"} onClick={async () => setJob((await live.run<typeof job>("export", {})) ?? null)}>
-            {job?.status === "running" ? "Exporting…" : "Export"}
-          </button>
+      </fieldset>
+      {job && (
+        <div className="export-status">
+          {working && <progress aria-label="Export progress" max={1} value={job.progress} />}
+          <span role="status">
+            {job.status === "done" ? "Video ready" : job.status === "failed" ? job.error?.message ?? "Export failed" : job.status === "cancelled" ? "Export cancelled" : job.message ?? "Preparing export…"}
+          </span>
         </div>
+      )}
+      <div className="row export-actions">
+        <button onClick={() => dialog.current?.close()}>{working ? "Hide" : "Close"}</button>
+        {working && <button className="danger" disabled={pending} onClick={() => void runJob("cancelRender", { jobId: job.jobId })}>Cancel export</button>}
+        {!working && <button className={job?.status === "done" ? "" : "primary"} disabled={pending} onClick={() => void runJob("export", {})}>Export</button>}
+        {job?.status === "done" && job.output && <button className="primary" onClick={() => void import("electron").then(({ ipcRenderer }) => ipcRenderer.invoke("reveal", job.output!.path)).catch((error: Error) => live.toast("error", error.message))}>{WEB ? "Download" : `Show in ${FILE_MANAGER}`}</button>}
       </div>
-    </div>
+    </dialog>
   );
 }

@@ -157,8 +157,11 @@ jobs:
           else
             unset ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS
           fi
-          apps/android/build.sh
-          unzip -l release/dist/*.apk | grep -E "lib/|assets/runtime" | awk '{print $1, $4}' | sort -k2
+          npm run dist:android
+          shopt -s nullglob
+          apks=(release/dist/*.apk)
+          test "${#apks[@]}" -eq 1
+          unzip -l "${apks[0]}" | grep -E "lib/|assets/runtime" | awk '{print $1, $4}' | sort -k2
       - uses: actions/upload-artifact@v4
         with:
           name: OpenEdits-Studio-Android

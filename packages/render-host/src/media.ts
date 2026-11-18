@@ -168,7 +168,7 @@ export class MediaManager implements SceneResources {
   ctx!: RenderContext;
   private signature = "";
 
-  constructor(private compositor: Compositor) {}
+  constructor(private compositor: Compositor, private options: { downsizeReaders?: boolean } = {}) {}
 
   /** Reset caches when the set of media files changes. */
   use(ctx: RenderContext) {
@@ -183,6 +183,7 @@ export class MediaManager implements SceneResources {
     this.readers.clear();
     for (const t of this.images.values()) this.compositor.deleteTexture(t);
     this.images.clear();
+    for (const lut of this.luts.values()) if (lut) this.compositor.gl.deleteTexture(lut.tex);
     this.luts.clear();
   }
 
@@ -250,9 +251,11 @@ export class MediaManager implements SceneResources {
           const shownH = layer.height / Math.max(0.01, 1 - layer.crop.top - layer.crop.bottom);
           const need = Math.min(1, Math.max(shownW / info.width, shownH / info.height));
           let reader = this.readers.get(layer.elementId);
-          if (!reader || info.width * need > reader.width * 1.5) {
+          const desiredWidth = info.width * need;
+          const tooLarge = this.options.downsizeReaders && reader && reader.width > desiredWidth * 1.75;
+          if (!reader || tooLarge || desiredWidth > reader.width * 1.5) {
             reader?.dispose();
-            const s = Math.min(1, need * (reader ? 1.25 : 1));
+            const s = Math.min(1, need * (reader && !tooLarge ? 1.25 : 1));
             reader = new VideoReader(this.compositor, this.ctx, info, even(info.width * s), even(info.height * s));
             this.readers.set(layer.elementId, reader);
           }

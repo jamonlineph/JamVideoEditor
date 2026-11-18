@@ -24,7 +24,8 @@
     "clean": "node scripts/clean.mjs",
     "test:unit": "vitest run packages/core packages/engine",
     "app": "npm run build && node scripts/app.mjs",
-    "dist": "node scripts/package.mjs"
+    "dist": "node scripts/package.mjs",
+    "dist:android": "bash apps/android/build.sh"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

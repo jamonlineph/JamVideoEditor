@@ -41,21 +41,21 @@ export async function droppedPaths(e: React.DragEvent): Promise<string[]> {
 }
 
 export function Dock() {
-  const u = useUi();
+  const tab = useUi("dockTab");
   return (
     <div className="dock">
       <div className="tabs">
         {(["media", "audio", "text", "effects"] as const).map((t) => (
-          <button key={t} className={u.dockTab === t ? "active" : ""} onClick={() => ui.set({ dockTab: t })}>
+          <button key={t} className={tab === t ? "active" : ""} aria-pressed={tab === t} onClick={() => ui.set({ dockTab: t })}>
             {t[0].toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
       <div className="pane">
-        {u.dockTab === "media" && <MediaTab />}
-        {u.dockTab === "audio" && <AudioTab />}
-        {u.dockTab === "text" && <TextTab />}
-        {u.dockTab === "effects" && <EffectsTab />}
+        {tab === "media" && <MediaTab />}
+        {tab === "audio" && <AudioTab />}
+        {tab === "text" && <TextTab />}
+        {tab === "effects" && <EffectsTab />}
       </div>
     </div>
   );

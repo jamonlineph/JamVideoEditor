@@ -148,7 +148,7 @@ function propAt(el: Element, prop: KeyframeProperty, fallback: number, playhead:
 
 export function Inspector() {
   const s = useLive();
-  const u = useUi();
+  const activePanel = useUi("panel");
   const project = s.project!;
   const sel = selectedElements(s);
 
@@ -157,7 +157,7 @@ export function Inspector() {
 
   const el = sel[0];
   const panels = TOOL_PANELS.filter((p) => p.data.appliesTo.includes(el.type));
-  const panel = panels.find((p) => p.id === u.panel) ?? panels[0];
+  const panel = panels.find((p) => p.id === activePanel) ?? panels[0];
   const onMain = mainTrack(project).elementIds.includes(el.id);
   return (
     <div className="inspector">
@@ -179,10 +179,15 @@ export function Inspector() {
         ))}
       </div>
       <div className="pane">
-        <PanelBody id={panel.id} el={el} project={project} playhead={u.playhead} onMain={onMain} />
+        <SelectedPanel id={panel.id} el={el} project={project} onMain={onMain} />
       </div>
     </div>
   );
+}
+
+function SelectedPanel(props: Omit<Parameters<typeof PanelBody>[0], "playhead">) {
+  const playhead = useUi("playhead");
+  return <PanelBody {...props} playhead={playhead} />;
 }
 
 function ProjectPanel({ project }: { project: Project }) {
