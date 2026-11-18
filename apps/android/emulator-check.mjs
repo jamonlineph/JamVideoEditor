@@ -57,6 +57,12 @@ const added = await call("addMedia", { path: uploaded.path });
 console.log(`clip ${added.elementId}`);
 const title = await call("addText", { text: "Made on Android", start: 0, duration: 3 });
 console.log(`title ${title.elementId}`);
+// Exercise the effect, transition and blend shaders too (the GPU must compile all of them).
+const right = await call("split", { elementId: added.elementId, time: 2 });
+await call("addTransition", { fromElementId: added.elementId, type: "circle_reveal", durationSeconds: 0.8 });
+await call("applyEffect", { elementId: right.elementId ?? right.createdIds?.[0], effectId: "vhs", intensity: 70 });
+await call("setBlendMode", { elementId: title.elementId, blendMode: "screen" });
+console.log("split, transition, effect and blend mode added");
 const voices = await call("ttsVoices", {});
 console.log(`${voices.count} text-to-speech voices`);
 if (!voices.count) throw new Error("eSpeak NG has no voices");

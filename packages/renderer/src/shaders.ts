@@ -219,6 +219,8 @@ void main() {
  * Layer effects (one pass each; blur and glow add separable blur passes in the compositor).
  * Texture row 0 is the top; colors are premultiplied. uParams carries each effect's parameters.
  */
+// One flat `if` per type, not an else-if chain: drivers parse a long chain as deeply nested blocks, and
+// some (Android emulators, older mobile GPUs) run out of parser stack ("memory exhausted").
 export const EFFECT_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uTex;
@@ -259,37 +261,46 @@ void main() {
     float d = distance(vUv, vec2(0.5)) * 1.41421;
     float soft = mix(0.2, 0.9, uParams.x);
     c.rgb *= 1.0 - uAmount * smoothstep(1.0 - soft, 1.0, d);
-  } else if (uType == 2) {                            // sharpen
+  }
+  if (uType == 2) {                            // sharpen
     vec4 blur = (texture(uTex, vUv + vec2(uTexel.x, 0.0)) + texture(uTex, vUv - vec2(uTexel.x, 0.0)) +
                  texture(uTex, vUv + vec2(0.0, uTexel.y)) + texture(uTex, vUv - vec2(0.0, uTexel.y))) * 0.25;
     c.rgb = clamp(c.rgb + (c.rgb - blur.rgb) * uAmount * 2.0, 0.0, c.a);
-  } else if (uType == 3) {                            // film grain: size px
+  }
+  if (uType == 3) {                            // film grain: size px
     float n = hash(floor(vUv / (uTexel * max(uParams.x, 1.0))) + uTime) - 0.5;
     c.rgb = clamp(c.rgb + n * uAmount * 0.35 * c.a, 0.0, c.a);
-  } else if (uType == 4) {                            // chromatic aberration: angle rad
+  }
+  if (uType == 4) {                            // chromatic aberration: angle rad
     vec2 dir = vec2(cos(uParams.x), sin(uParams.x)) * uAmount * 0.02;
     c.r = texture(uTex, vUv + dir).r;
     c.b = texture(uTex, vUv - dir).b;
-  } else if (uType == 5) {                            // pixelate: cell px
+  }
+  if (uType == 5) {                            // pixelate: cell px
     vec2 cell = uTexel * max(uParams.x, 1.0);
     c = texture(uTex, (floor(vUv / cell) + 0.5) * cell);
-  } else if (uType == 6) {                            // posterize: levels
+  }
+  if (uType == 6) {                            // posterize: levels
     float levels = max(uParams.x, 2.0);
     if (c.a > 1e-4) c.rgb = floor(c.rgb / c.a * levels + 0.5) / levels * c.a;
-  } else if (uType == 7) {                            // mirror: axis (0 vertical seam, 1 horizontal)
+  }
+  if (uType == 7) {                            // mirror: axis (0 vertical seam, 1 horizontal)
     vec2 uv = uParams.x < 0.5 ? vec2(vUv.x > 0.5 ? 1.0 - vUv.x : vUv.x, vUv.y) : vec2(vUv.x, vUv.y > 0.5 ? 1.0 - vUv.y : vUv.y);
     c = texture(uTex, uv);
-  } else if (uType == 8) {                            // motion blur: angle rad, length 0..1
+  }
+  if (uType == 8) {                            // motion blur: angle rad, length 0..1
     vec2 d = vec2(cos(uParams.x), sin(uParams.x)) * uParams.y * 0.06 * shortUv();
     vec4 s = vec4(0.0);
     for (int i = -8; i <= 8; i++) s += texture(uTex, vUv + d * float(i) / 8.0);
     c = mix(c, s / 17.0, uAmount);
-  } else if (uType == 9) {                            // zoom blur: strength 0..1
+  }
+  if (uType == 9) {                            // zoom blur: strength 0..1
     vec2 d = (vUv - 0.5) * uParams.x * 0.3;
     vec4 s = vec4(0.0);
     for (int i = 0; i < 16; i++) s += texture(uTex, vUv - d * float(i) / 15.0);
     c = mix(c, s / 16.0, uAmount);
-  } else if (uType == 10) {                           // tilt shift: focus line y, sharp band width
+  }
+  if (uType == 10) {                           // tilt shift: focus line y, sharp band width
     float f = smoothstep(uParams.y * 0.5, uParams.y * 0.5 + 0.25, abs(vUv.y - uParams.x));
     vec2 r = f * 0.025 * shortUv();
     vec4 s = c;
@@ -299,14 +310,17 @@ void main() {
       s += texture(uTex, vUv + vec2(cos(a), sin(a)) * rr * r);
     }
     c = mix(c, s / 25.0, uAmount);
-  } else if (uType == 11) {                           // glow, step 1: keep what is brighter than the threshold
+  }
+  if (uType == 11) {                           // glow, step 1: keep what is brighter than the threshold
     float l = dot(unpremul(c), LUMA);
     c *= smoothstep(uParams.x, min(1.0, uParams.x + 0.25), l);
-  } else if (uType == 12) {                           // glow, step 2: add the blurred highlights
+  }
+  if (uType == 12) {                           // glow, step 2: add the blurred highlights
     vec4 g = texture(uAux, vUv) * uAmount * 1.6;
     float a = max(c.a, min(1.0, g.a));
     c = vec4(min(c.rgb + g.rgb, vec3(a)), a);
-  } else if (uType == 13) {                           // light leak: hue deg, speed
+  }
+  if (uType == 13) {                           // light leak: hue deg, speed
     float t = uSeconds * max(uParams.y, 0.05) * 0.35;
     vec2 center = vec2(0.1 + 0.8 * noise1(t), 0.05 + 0.35 * noise1(t + 17.0));
     float d = distance(vUv * vec2(aspect(), 1.0), center * vec2(aspect(), 1.0));
@@ -314,10 +328,12 @@ void main() {
     vec3 tint = mix(hueColor(uParams.x), vec3(1.0, 0.9, 0.7), 0.25) * leak * c.a;
     c.rgb = 1.0 - (1.0 - c.rgb) * (1.0 - tint);       // screen
     c.rgb = min(c.rgb, vec3(c.a));
-  } else if (uType == 14) {                           // flash: Hz
+  }
+  if (uType == 14) {                           // flash: Hz
     float pulse = uParams.x > 0.0 ? pow(0.5 + 0.5 * cos(TAU * uParams.x * uSeconds), 12.0) : 0.0;
     c.rgb = mix(c.rgb, vec3(c.a), pulse * uAmount);
-  } else if (uType == 15) {                           // VHS: tracking 0..1, noise 0..1
+  }
+  if (uType == 15) {                           // VHS: tracking 0..1, noise 0..1
     float frame = floor(uSeconds * 30.0);
     float line = floor(vUv.y / uTexel.y);
     float band = exp(-pow((fract(vUv.y + uSeconds * 0.18) - 0.5) * 18.0, 2.0));
@@ -330,7 +346,8 @@ void main() {
     col = mix(col, vec3(dot(col, LUMA)), 0.25);
     col += (hash(vUv * 731.0 + frame) - 0.5) * uParams.y * 0.35 * base.a;
     c = mix(c, vec4(clamp(col, 0.0, base.a), base.a), uAmount);
-  } else if (uType == 16) {                           // glitch: strength 0..1, speed
+  }
+  if (uType == 16) {                           // glitch: strength 0..1, speed
     float t = floor(uSeconds * max(uParams.y, 0.1) * 4.0);
     float burst = step(0.5, hash(vec2(t, 3.1)));
     float rows = floor(vUv.y * (6.0 + 26.0 * hash(vec2(t, 7.0))));
@@ -341,7 +358,8 @@ void main() {
     g.r = texture(uTex, uv + vec2(ca, 0.0)).r;
     g.b = texture(uTex, uv - vec2(ca, 0.0)).b;
     c = mix(c, g, uAmount);
-  } else if (uType == 17) {                           // halftone: dot pitch px
+  }
+  if (uType == 17) {                           // halftone: dot pitch px
     float cell = max(uParams.x, 2.0);
     mat2 rot = mat2(0.70711, 0.70711, -0.70711, 0.70711);
     vec2 px = rot * (vUv / uTexel);
@@ -351,29 +369,34 @@ void main() {
     float ink = 1.0 - smoothstep(r - 0.75, r + 0.75, distance(px, centerPx));
     vec3 paper = vec3(0.97, 0.96, 0.93);
     c = mix(c, vec4(mix(paper, vec3(0.05), ink) * c.a, c.a), uAmount);
-  } else if (uType == 18) {                           // kaleidoscope: segments
+  }
+  if (uType == 18) {                           // kaleidoscope: segments
     vec2 p = (vUv - 0.5) * vec2(aspect(), 1.0);
     float seg = TAU / max(uParams.x, 2.0);
     float a = mod(atan(p.y, p.x), seg);
     a = abs(a - seg * 0.5);
     vec2 q = vec2(cos(a), sin(a)) * length(p) / vec2(aspect(), 1.0);
     c = mix(c, texture(uTex, q + 0.5), uAmount);
-  } else if (uType == 19) {                           // fisheye: strength 0..1 (edges stay put, the middle bulges)
+  }
+  if (uType == 19) {                           // fisheye: strength 0..1 (edges stay put, the middle bulges)
     vec2 p = (vUv * 2.0 - 1.0) * vec2(aspect(), 1.0) / max(aspect(), 1.0);
     float r2 = dot(p, p);
     float k = uParams.x * 0.65;
     vec2 q = p * (1.0 - k + k * r2) * max(aspect(), 1.0) / vec2(aspect(), 1.0);
     c = mix(c, sampleOr(q * 0.5 + 0.5, vec4(0.0)), uAmount);
-  } else if (uType == 20) {                           // camera shake: strength 0..1, Hz
+  }
+  if (uType == 20) {                           // camera shake: strength 0..1, Hz
     float t = uSeconds * max(uParams.y, 0.1);
     float s = uParams.x * uAmount;
     vec2 off = vec2(noise1(t) - 0.5, noise1(t + 31.7) - 0.5) * s * 0.08;
     float zoom = 1.0 + s * 0.09;
     c = texture(uTex, (vUv - 0.5) / zoom + 0.5 + off / zoom);
-  } else if (uType == 21) {                           // zoom pulse: strength 0..1, Hz
+  }
+  if (uType == 21) {                           // zoom pulse: strength 0..1, Hz
     float pulse = uParams.y > 0.0 ? pow(0.5 + 0.5 * cos(TAU * uParams.y * uSeconds), 4.0) : 0.0;
     c = texture(uTex, (vUv - 0.5) / (1.0 + uParams.x * 0.3 * pulse * uAmount) + 0.5);
-  } else if (uType == 22) {                           // denoise: strength 0..1 (edge-preserving)
+  }
+  if (uType == 22) {                           // denoise: strength 0..1 (edge-preserving)
     vec4 sum = vec4(0.0);
     float wsum = 0.0;
     float range = 0.01 + 0.09 * uParams.x;
@@ -423,6 +446,8 @@ void main() {
 export const SUBJECT_TYPES: Record<string, number> = { background_blur: 1, subject_glow: 2, outline: 3 };
 
 /** Composites a premultiplied layer over the opaque backdrop with a blend mode. */
+// One flat `if` per type, not an else-if chain: drivers parse a long chain as deeply nested blocks, and
+// some (Android emulators, older mobile GPUs) run out of parser stack ("memory exhausted").
 export const BLEND_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uBase;
@@ -440,22 +465,23 @@ void main() {
   vec4 layer = texture(uLayer, vUv);
   if (layer.a < 1e-4) { outColor = vec4(b, 1.0); return; }
   vec3 s = layer.rgb / layer.a;
-  vec3 r;
+  vec3 r = s;                                                 // normal
   if (uMode == 1) r = b * s;                                   // multiply
-  else if (uMode == 2) r = 1.0 - (1.0 - b) * (1.0 - s);        // screen
-  else if (uMode == 3) r = mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b)); // overlay
-  else if (uMode == 4) r = min(b, s);                          // darken
-  else if (uMode == 5) r = max(b, s);                          // lighten
-  else if (uMode == 6) r = min(vec3(1.0), b / max(1.0 - s, vec3(1e-4))); // colorDodge
-  else if (uMode == 7) r = 1.0 - min(vec3(1.0), (1.0 - b) / max(s, vec3(1e-4))); // colorBurn
-  else if (uMode == 8) r = vec3(softLight(b.r, s.r), softLight(b.g, s.g), softLight(b.b, s.b));
-  else if (uMode == 9) r = mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, s)); // hardLight
-  else if (uMode == 10) r = abs(b - s);                        // difference
-  else if (uMode == 11) r = min(vec3(1.0), b + s);             // add
-  else r = s;
+  if (uMode == 2) r = 1.0 - (1.0 - b) * (1.0 - s);        // screen
+  if (uMode == 3) r = mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b)); // overlay
+  if (uMode == 4) r = min(b, s);                          // darken
+  if (uMode == 5) r = max(b, s);                          // lighten
+  if (uMode == 6) r = min(vec3(1.0), b / max(1.0 - s, vec3(1e-4))); // colorDodge
+  if (uMode == 7) r = 1.0 - min(vec3(1.0), (1.0 - b) / max(s, vec3(1e-4))); // colorBurn
+  if (uMode == 8) r = vec3(softLight(b.r, s.r), softLight(b.g, s.g), softLight(b.b, s.b));
+  if (uMode == 9) r = mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, s)); // hardLight
+  if (uMode == 10) r = abs(b - s);                        // difference
+  if (uMode == 11) r = min(vec3(1.0), b + s);             // add
   outColor = vec4(mix(b, r, layer.a), 1.0);
 }`;
 
+// One flat `if` per type, not an else-if chain: drivers parse a long chain as deeply nested blocks, and
+// some (Android emulators, older mobile GPUs) run out of parser stack ("memory exhausted").
 export const TRANSITION_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uFrom;
@@ -472,24 +498,24 @@ void main() {
   vec2 uv = vUv;
   vec4 a = texture(uFrom, uv);
   vec4 b = texture(uTo, uv);
-  vec4 c;
+  vec4 c = mix(a, b, p);                                     // crossfade (and unknown types)
   if (uType == 1) c = p < 0.5 ? mix(a, vec4(0.0, 0.0, 0.0, 1.0), p * 2.0) : mix(vec4(0.0, 0.0, 0.0, 1.0), b, p * 2.0 - 1.0);
-  else if (uType == 2) c = p < 0.5 ? mix(a, vec4(1.0), p * 2.0) : mix(vec4(1.0), b, p * 2.0 - 1.0);
-  else if (uType == 3) c = uv.x >= 1.0 - e ? texture(uTo, uv - vec2(1.0 - e, 0.0)) : a;                  // slide_left
-  else if (uType == 4) c = uv.x < e ? texture(uTo, uv + vec2(1.0 - e, 0.0)) : a;                          // slide_right
-  else if (uType == 5) c = uv.y >= 1.0 - e ? texture(uTo, uv - vec2(0.0, 1.0 - e)) : a;                  // slide_up
-  else if (uType == 6) c = uv.y < e ? texture(uTo, uv + vec2(0.0, 1.0 - e)) : a;                          // slide_down
-  else if (uType == 7) c = uv.x < 1.0 - e ? texture(uFrom, uv + vec2(e, 0.0)) : texture(uTo, uv - vec2(1.0 - e, 0.0)); // push_left
-  else if (uType == 8) c = uv.y < 1.0 - e ? texture(uFrom, uv + vec2(0.0, e)) : texture(uTo, uv - vec2(0.0, 1.0 - e)); // push_up
-  else if (uType == 9) c = mix(texture(uFrom, (uv - 0.5) / (1.0 + e) + 0.5), b, smoothstep(0.2, 0.8, p));             // zoom_in
-  else if (uType == 10) c = mix(a, texture(uTo, (uv - 0.5) / (2.0 - e) + 0.5), smoothstep(0.2, 0.8, p));              // zoom_out
-  else if (uType == 11) c = mix(a, b, smoothstep(-0.02, 0.02, uv.x - (1.0 - e)));                                      // wipe_left
-  else if (uType == 12) {                                                                                              // circle_reveal
+  if (uType == 2) c = p < 0.5 ? mix(a, vec4(1.0), p * 2.0) : mix(vec4(1.0), b, p * 2.0 - 1.0);
+  if (uType == 3) c = uv.x >= 1.0 - e ? texture(uTo, uv - vec2(1.0 - e, 0.0)) : a;                  // slide_left
+  if (uType == 4) c = uv.x < e ? texture(uTo, uv + vec2(1.0 - e, 0.0)) : a;                          // slide_right
+  if (uType == 5) c = uv.y >= 1.0 - e ? texture(uTo, uv - vec2(0.0, 1.0 - e)) : a;                  // slide_up
+  if (uType == 6) c = uv.y < e ? texture(uTo, uv + vec2(0.0, 1.0 - e)) : a;                          // slide_down
+  if (uType == 7) c = uv.x < 1.0 - e ? texture(uFrom, uv + vec2(e, 0.0)) : texture(uTo, uv - vec2(1.0 - e, 0.0)); // push_left
+  if (uType == 8) c = uv.y < 1.0 - e ? texture(uFrom, uv + vec2(0.0, e)) : texture(uTo, uv - vec2(0.0, 1.0 - e)); // push_up
+  if (uType == 9) c = mix(texture(uFrom, (uv - 0.5) / (1.0 + e) + 0.5), b, smoothstep(0.2, 0.8, p));             // zoom_in
+  if (uType == 10) c = mix(a, texture(uTo, (uv - 0.5) / (2.0 - e) + 0.5), smoothstep(0.2, 0.8, p));              // zoom_out
+  if (uType == 11) c = mix(a, b, smoothstep(-0.02, 0.02, uv.x - (1.0 - e)));                                      // wipe_left
+  if (uType == 12) {                                                                                              // circle_reveal
     float d = length((uv - 0.5) * vec2(uAspect, 1.0));
     float r = e * length(vec2(uAspect, 1.0)) * 0.5;
     c = mix(b, a, smoothstep(-0.005, 0.005, d - r));
   }
-  else if (uType == 13) {                                                                                              // spin: turn and zoom out, then in
+  if (uType == 13) {                                                                                              // spin: turn and zoom out, then in
     float ang = e * 6.2831853;
     float zoom = 1.0 + sin(3.14159 * p) * 1.4;
     vec2 q = (uv - 0.5) * vec2(uAspect, 1.0) * zoom;
@@ -499,7 +525,7 @@ void main() {
     vec4 to = inside ? texture(uTo, q) : vec4(0.0, 0.0, 0.0, 1.0);
     c = mix(from, to, smoothstep(0.4, 0.6, p));
   }
-  else if (uType == 14) {                                                                                              // blur_dissolve
+  if (uType == 14) {                                                                                              // blur_dissolve
     float r = sin(3.14159 * p) * 0.03;
     vec4 sa = a;
     vec4 sb = b;
@@ -511,7 +537,7 @@ void main() {
     }
     c = mix(sa, sb, e) / 17.0;
   }
-  else if (uType == 15) {                                                                                              // glitch
+  if (uType == 15) {                                                                                              // glitch
     float burst = sin(3.14159 * p);
     float t = floor(p * 24.0);
     float rows = floor(uv.y * (8.0 + 20.0 * fract(sin(t * 12.9898) * 43758.5453)));
@@ -522,7 +548,7 @@ void main() {
     vec4 to = vec4(texture(uTo, q + vec2(ca, 0.0)).r, texture(uTo, q).g, texture(uTo, q - vec2(ca, 0.0)).b, 1.0);
     c = p < 0.5 ? from : to;
   }
-  else if (uType == 16) {                                                                                              // whip_pan: fast push with motion blur
+  if (uType == 16) {                                                                                              // whip_pan: fast push with motion blur
     vec4 s = vec4(0.0);
     float blur = sin(3.14159 * p) * 0.12;
     for (int i = -6; i <= 6; i++) {
@@ -531,11 +557,10 @@ void main() {
     }
     c = s / 13.0;
   }
-  else if (uType == 17) {                                                                                              // flash: cut under a white flash
+  if (uType == 17) {                                                                                              // flash: cut under a white flash
     float w = pow(1.0 - abs(2.0 * p - 1.0), 2.0);
     c = mix(p < 0.5 ? a : b, vec4(1.0), w);
   }
-  else c = mix(a, b, p);
   outColor = c;
 }`;
 
