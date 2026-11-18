@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { compositionDuration, isAudioKind, mainTrack, type Element, type Project, type Track } from "@openedits/core";
 import { additiveClick, live, useLive } from "./live.js";
 import { droppedPaths } from "./Dock.js";
@@ -16,6 +16,9 @@ const COLORS: Record<string, string> = {
   adjustment: "var(--adjust)",
 };
 const SNAP_PX = 8;
+const MIN_ZOOM = 0.05;
+const MAX_ZOOM = 800;
+const OVERSCAN = 360;
 
 /** Lanes top → bottom: overlays (top layer first), main, then audio. */
 export function laneOrder(project: Project): Track[] {
@@ -30,8 +33,8 @@ export function laneHeight(t: Track) {
 
 /** Ruler step (seconds) so labels are at least ~70 px apart. */
 export function rulerStep(pxPerSecond: number) {
-  for (const s of [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]) if (s * pxPerSecond >= 70) return s;
-  return 600;
+  for (const s of [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800]) if (s * pxPerSecond >= 70) return s;
+  return 3600;
 }
 
 /** Nearest snap target within SNAP_PX, else the time unchanged. */
@@ -55,14 +58,14 @@ type Drag =
 
 export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
   const s = useLive();
-  const u = useUi();
   const project = s.project!;
-  const pps = u.pxPerSecond;
+  const pps = useUi("pxPerSecond");
   const selection = new Set(s.appState?.selection.elementIds ?? []);
-  const lanes = laneOrder(project);
-  const total = Math.max(compositionDuration(project), 10);
-  const width = (total + 20) * pps;
+  const lanes = useMemo(() => laneOrder(project), [project]);
+  const duration = useMemo(() => compositionDuration(project), [project]);
   const scroller = useRef<HTMLDivElement>(null);
+  const trackHeads = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState({ left: 0, right: 800 });
   const [drag, setDragState] = useState<Drag | null>(null);
   // Pointer handlers read the ref: several events can arrive before React re-renders.
   const dragRef = useRef<Drag | null>(null);
@@ -74,24 +77,48 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
   const rs = project.rippleSettings;
 
   const snapTargets = useMemo(() => {
-    const t: number[] = [0, u.playhead];
+    const t: number[] = [0];
     for (const el of Object.values(project.elements)) t.push(el.start, el.start + el.duration);
     for (const b of project.beatMarkers) t.push(b.timeSeconds);
     return t;
-  }, [s.revision, u.playhead]);
+  }, [project]);
 
   const timeAt = (clientX: number) => {
     const r = scroller.current!.getBoundingClientRect();
-    return Math.max(0, (clientX - r.left + scroller.current!.scrollLeft) / pps);
+    return Math.max(0, (clientX - r.left + scroller.current!.scrollLeft) / ui.get().pxPerSecond);
   };
 
-  // Keep the playhead in view while playing.
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const el = scroller.current!;
+    const heads = trackHeads.current!;
+    const update = () => {
+      heads.style.transform = `translateY(${-el.scrollTop}px)`;
+      const left = Math.max(0, Math.floor(el.scrollLeft / OVERSCAN - 1) * OVERSCAN);
+      const right = Math.ceil((el.scrollLeft + el.clientWidth) / OVERSCAN + 1) * OVERSCAN;
+      setRange((prev) => prev.left === left && prev.right === right ? prev : { left, right });
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    el.addEventListener("scroll", update, { passive: true });
+    update();
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  function zoom(next: number, anchor?: number) {
     const el = scroller.current;
-    if (!el || !u.playing) return;
-    const x = u.playhead * pps;
-    if (x > el.scrollLeft + el.clientWidth - 40) el.scrollLeft = x - 80;
-  }, [u.playhead, u.playing, pps]);
+    if (!el) return;
+    const before = ui.get().pxPerSecond;
+    const scale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, next));
+    if (before === scale) return;
+    const playhead = ui.get().playhead * before - el.scrollLeft;
+    const offset = anchor ?? (playhead >= 0 && playhead < el.clientWidth ? playhead : el.clientWidth / 2);
+    const time = (el.scrollLeft + offset) / before;
+    ui.set({ pxPerSecond: scale });
+    requestAnimationFrame(() => { el.scrollLeft = time * scale - offset; });
+  }
 
   // Ctrl/Cmd + wheel zooms around the cursor.
   useEffect(() => {
@@ -100,10 +127,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      const t = timeAt(e.clientX);
-      const next = Math.min(800, Math.max(4, ui.get().pxPerSecond * Math.exp(-e.deltaY * 0.01)));
-      ui.set({ pxPerSecond: next });
-      requestAnimationFrame(() => (el.scrollLeft = t * next - (e.clientX - el.getBoundingClientRect().left)));
+      zoom(ui.get().pxPerSecond * Math.exp(-e.deltaY * 0.01), e.clientX - el.getBoundingClientRect().left);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -145,7 +169,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     if (d.kind === "trim") {
       if (Math.abs(d.dx) < 1) return;
       const raw = d.side === "l" ? el.start + d.dx / pps : el.start + el.duration + d.dx / pps;
-      const time = rs.snappingEnabled ? snapTime(raw, snapTargets, pps) : raw;
+      const time = rs.snappingEnabled ? snapTime(raw, [...snapTargets, ui.get().playhead], pps) : raw;
       void live.run(d.side === "l" ? "trimStart" : "trimEnd", { elementId: el.id, time });
       return;
     }
@@ -168,7 +192,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
       if (index < 0) index = others.length;
       return void live.run("convertToMain", { elementId: el.id, index });
     }
-    const start = rs.snappingEnabled ? snapTime(raw, snapTargets.filter((t) => t !== el.start && t !== el.start + el.duration), pps) : raw;
+    const start = rs.snappingEnabled ? snapTime(raw, [...snapTargets.filter((t) => t !== el.start && t !== el.start + el.duration), ui.get().playhead], pps) : raw;
     void live.run("move", { elementId: el.id, start, ...(d.laneId !== el.trackId ? { trackId: d.laneId } : {}), snap: false });
   };
 
@@ -225,82 +249,93 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
   };
 
   const step = rulerStep(pps);
+  const width = Math.max(duration, 10) * pps + 100;
+  const inRange = (start: number, end = start) => end * pps >= range.left && start * pps <= range.right;
   const ticks: number[] = [];
-  for (let t = 0; t <= total + 20; t += step) ticks.push(t);
+  const right = Math.min(Math.max(width, range.right - OVERSCAN), range.right);
+  for (let n = Math.ceil(range.left / (pps * step)); n <= right / (pps * step); n++) ticks.push(n * step);
 
   return (
-    <div className="timeline">
+    <section className="timeline" aria-label="Timeline">
       <div className="bar">
-        <button title="Split at playhead (S)" onClick={() => void live.run("splitAt", { times: [u.playhead], elementIds: selection.size ? [...selection] : mainTrack(project).elementIds })}>
-          ✂︎ Split
-        </button>
-        <button title="Delete selection" disabled={!selection.size} onClick={() => void live.run("delete", { elementIds: [...selection] })}>
-          Delete
-        </button>
-        <span className="sep" />
-        <button className={rs.magnetEnabled ? "on" : ""} title="Magnetic main track (no gaps)" onClick={() => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled })}>
-          Magnet
-        </button>
-        <button className={rs.snappingEnabled ? "on" : ""} title="Snap to edges, playhead and beats" onClick={() => void live.run("setRippleTiers", { snappingEnabled: !rs.snappingEnabled })}>
-          Snap
-        </button>
-        <button className={rs.tier1RippleEnabled ? "on" : ""} title="Overlays follow the main clip they sit on" onClick={() => void live.run("setRippleTiers", { tier1RippleEnabled: !rs.tier1RippleEnabled })}>
-          Ripple linked
-        </button>
-        <button className={rs.tier2RippleEnabled ? "on" : ""} title="Everything after an edit shifts with it" onClick={() => void live.run("setRippleTiers", { tier2RippleEnabled: !rs.tier2RippleEnabled })}>
-          Ripple all
-        </button>
-        <span style={{ flex: 1 }} />
-        <span className="muted small">{formatTime(total, project.canvas.fps)}</span>
-        <button className="icon ghost" title="Zoom out" onClick={() => ui.set({ pxPerSecond: Math.max(4, pps / 1.5) })}>
-          −
-        </button>
-        <input type="range" min={Math.log(4)} max={Math.log(800)} step={0.01} value={Math.log(pps)} onChange={(e) => ui.set({ pxPerSecond: Math.exp(Number(e.target.value)) })} style={{ width: 110 }} />
-        <button className="icon ghost" title="Zoom in" onClick={() => ui.set({ pxPerSecond: Math.min(800, pps * 1.5) })}>
-          ＋
-        </button>
-        <button
-          className="ghost"
-          title="Fit the whole timeline"
-          onClick={() => {
-            const w = scroller.current?.clientWidth ?? 800;
-            ui.set({ pxPerSecond: Math.min(800, Math.max(4, (w - 40) / Math.max(1, compositionDuration(project)))) });
-            if (scroller.current) scroller.current.scrollLeft = 0;
-          }}
-        >
-          Fit
-        </button>
+        <div className="timeline-edit">
+          <strong>Timeline</strong>
+          <button title="Split at playhead" disabled={!duration} onClick={() => void live.run("splitAt", { times: [ui.get().playhead], elementIds: selection.size ? [...selection] : mainTrack(project).elementIds })}>
+            ✂︎ Split
+          </button>
+          <button title="Delete selection" disabled={!selection.size} onClick={() => void live.run("delete", { elementIds: [...selection] })}>
+            Delete
+          </button>
+          <span className="sep" />
+          <button className={rs.magnetEnabled ? "on" : ""} aria-pressed={rs.magnetEnabled} title="Magnetic main track (no gaps)" onClick={() => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled })}>
+            Magnet
+          </button>
+          <button className={rs.snappingEnabled ? "on" : ""} aria-pressed={rs.snappingEnabled} title="Snap to edges, playhead and beats" onClick={() => void live.run("setRippleTiers", { snappingEnabled: !rs.snappingEnabled })}>
+            Snap
+          </button>
+          <button className={rs.tier1RippleEnabled ? "on ripple" : "ripple"} aria-pressed={rs.tier1RippleEnabled} title="Overlays follow the main clip they sit on" onClick={() => void live.run("setRippleTiers", { tier1RippleEnabled: !rs.tier1RippleEnabled })}>
+            Ripple linked
+          </button>
+          <button className={rs.tier2RippleEnabled ? "on ripple" : "ripple"} aria-pressed={rs.tier2RippleEnabled} title="Everything after an edit shifts with it" onClick={() => void live.run("setRippleTiers", { tier2RippleEnabled: !rs.tier2RippleEnabled })}>
+            Ripple all
+          </button>
+        </div>
+        <div className="timeline-zoom">
+          <button className="icon ghost" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(pps / 1.5)}>
+            −
+          </button>
+          <input type="range" aria-label="Timeline zoom" min={Math.log(MIN_ZOOM)} max={Math.log(MAX_ZOOM)} step={0.01} value={Math.log(pps)} onChange={(e) => zoom(Math.exp(Number(e.target.value)))} />
+          <button className="icon ghost" aria-label="Zoom in" title="Zoom in" onClick={() => zoom(pps * 1.5)}>
+            ＋
+          </button>
+          <button
+            className="ghost"
+            title="Fit the whole timeline"
+            onClick={() => {
+              const w = scroller.current?.clientWidth ?? 800;
+              ui.set({ pxPerSecond: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (w - 32) / Math.max(1, duration))) });
+              if (scroller.current) scroller.current.scrollLeft = 0;
+            }}
+          >
+            Fit
+          </button>
+        </div>
       </div>
       <div className="body">
         <div className="track-heads">
-          <div style={{ height: 26, borderBottom: "1px solid var(--line)" }} />
-          {lanes.map((t) => (
-            <div key={t.id} className="track-head" style={{ height: laneHeight(t) }}>
-              <span className="grow" title={t.name}>
-                {t.kind === "main" ? "Main" : t.name}
-              </span>
-              <button title={t.locked ? "Unlock" : "Lock"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, locked: !t.locked })} style={{ opacity: t.locked ? 1 : 0.45 }}>
-                {t.locked ? "🔒" : "🔓"}
-              </button>
-              {isAudioKind(t.kind) || t.kind === "main" ? (
-                <button title={t.muted ? "Unmute" : "Mute"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, muted: !t.muted })} style={{ opacity: t.muted ? 1 : 0.45 }}>
-                  {t.muted ? "🔇" : "🔊"}
-                </button>
-              ) : null}
-              {!isAudioKind(t.kind) && (
-                <button title={t.hidden ? "Show" : "Hide"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, hidden: !t.hidden })} style={{ opacity: t.hidden ? 1 : 0.45 }}>
-                  {t.hidden ? "◌" : "◉"}
-                </button>
-              )}
+          <div className="track-head-caption">Tracks</div>
+          <div className="track-head-scroll">
+            <div ref={trackHeads}>
+              {lanes.map((t) => (
+                <div key={t.id} className="track-head" style={{ height: laneHeight(t) }}>
+                  <span className="grow" title={t.name}>
+                    {t.kind === "main" ? "Main" : t.name}
+                  </span>
+                  <button title={t.locked ? "Unlock" : "Lock"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, locked: !t.locked })} style={{ opacity: t.locked ? 1 : 0.45 }}>
+                    {t.locked ? "🔒" : "🔓"}
+                  </button>
+                  {isAudioKind(t.kind) || t.kind === "main" ? (
+                    <button title={t.muted ? "Unmute" : "Mute"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, muted: !t.muted })} style={{ opacity: t.muted ? 1 : 0.45 }}>
+                      {t.muted ? "🔇" : "🔊"}
+                    </button>
+                  ) : null}
+                  {!isAudioKind(t.kind) && (
+                    <button title={t.hidden ? "Show" : "Hide"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, hidden: !t.hidden })} style={{ opacity: t.hidden ? 1 : 0.45 }}>
+                      {t.hidden ? "◌" : "◉"}
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
         <div className="lanes" ref={scroller} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => setDrag(null)}>
           <div className="lanes-inner" style={{ width }}>
             <div
               className="ruler"
               onPointerDown={(e) => {
-                capturePointer(e.currentTarget.parentElement!.parentElement as HTMLElement, e.pointerId);
+                if (e.button !== 0 || dragRef.current) return;
+                capturePointer(scroller.current!, e.pointerId);
                 setDrag({ kind: "scrub" });
                 onSeek(timeAt(e.clientX));
               }}
@@ -310,7 +345,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                   {formatTime(t, project.canvas.fps).replace(/:00$/, "")}
                 </div>
               ))}
-              {project.beatMarkers.map((b) => (
+              {project.beatMarkers.filter((b) => inRange(b.timeSeconds)).map((b) => (
                 <div key={b.id} className="beat" style={{ left: b.timeSeconds * pps, opacity: 0.4 + 0.6 * (b.strength ?? 1) }} title={`Beat ${b.timeSeconds.toFixed(2)}s`} />
               ))}
             </div>
@@ -336,12 +371,13 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
               >
                 {t.elementIds.map((id) => {
                   const el = project.elements[id];
-                  if (!el) return null;
+                  if (!el || (!(drag && "id" in drag && drag.id === id) && !inRange(el.start, el.start + el.duration))) return null;
                   return <Clip key={id} el={el} project={project} pps={pps} selected={selection.has(id)} drag={drag && "id" in drag && drag.id === id ? drag : null} onPointerDown={(e, kind) => {
                     e.stopPropagation();
+                    if (e.button !== 0 || dragRef.current) return;
                     if (t.locked) return select(id, additiveClick(e));
                     if (!selection.has(id) || additiveClick(e)) select(id, additiveClick(e));
-                    capturePointer(e.currentTarget.closest(".lanes") as HTMLElement, e.pointerId);
+                    capturePointer(scroller.current!, e.pointerId);
                     if (kind === "body") setDrag({ kind: "move", id, startX: e.clientX, startY: e.clientY, origStart: el.start, dx: 0, laneId: t.id, moved: false });
                     else setDrag({ kind: "trim", id, side: kind, startX: e.clientX, dx: 0 });
                   }} />;
@@ -351,17 +387,38 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                     const from = project.elements[tr.fromElementId];
                     if (!from) return null;
                     const cut = from.start + from.duration;
+                    if (!inRange(cut - tr.durationSeconds / 2, cut + tr.durationSeconds / 2)) return null;
                     return <div key={tr.id} className="tr" title={`${tr.type} ${tr.durationSeconds.toFixed(2)}s`} style={{ position: "absolute", top: 3, bottom: 3, left: (cut - tr.durationSeconds / 2) * pps, width: tr.durationSeconds * pps, zIndex: 3 }} />;
                   })}
               </div>
             ))}
             {dropX !== null && <div className="drop-line" style={{ left: dropX }} />}
-            <div className="playhead" style={{ left: u.playhead * pps }} />
+            <TimelinePlayhead scroller={scroller} pps={pps} />
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
+}
+
+function TimelinePlayhead({ scroller, pps }: { scroller: RefObject<HTMLDivElement | null>; pps: number }) {
+  const marker = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    let previous = ui.get().playhead;
+    const update = () => {
+      const { playhead, playing } = ui.get();
+      const x = playhead * pps;
+      marker.current!.style.transform = `translateX(${x}px)`;
+      const el = scroller.current;
+      if (el && playing && previous !== playhead && (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth - 24)) {
+        el.scrollLeft = Math.max(0, x - Math.min(80, el.clientWidth / 3));
+      }
+      previous = playhead;
+    };
+    update();
+    return ui.subscribe(update);
+  }, [pps, scroller]);
+  return <div className="playhead" ref={marker} />;
 }
 
 function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element; project: Project; pps: number; selected: boolean; drag: Drag | null; onPointerDown: (e: React.PointerEvent, kind: "body" | "l" | "r") => void }) {
@@ -418,8 +475,8 @@ function Waveform({ el, project, pps }: { el: Extract<Element, { type: "video" |
       const c = canvas.current;
       if (cancelled || !c || !w.peaks.length) return;
       const r = c.getBoundingClientRect();
-      c.width = Math.max(1, Math.round(r.width * devicePixelRatio));
-      c.height = Math.max(1, Math.round(r.height * devicePixelRatio));
+      c.width = Math.min(2048, Math.max(1, Math.round(r.width * devicePixelRatio)));
+      c.height = Math.max(1, Math.round(r.height * Math.min(2, devicePixelRatio)));
       const g = c.getContext("2d")!;
       g.clearRect(0, 0, c.width, c.height);
       g.fillStyle = el.type === "audio" ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.3)";
@@ -432,7 +489,7 @@ function Waveform({ el, project, pps }: { el: Extract<Element, { type: "video" |
         const bh = Math.max(1, v * h * 0.8);
         g.fillRect(x, el.type === "audio" ? (h - bh) / 2 : h - bh, 1, bh);
       }
-    });
+    }).catch(() => {});
     return () => {
       cancelled = true;
     };

@@ -20,7 +20,7 @@ export function App() {
   const screen = s.appState?.screen;
   return (
     <>
-      {!s.appState ? <Splash connected={s.connected} /> : screen === "editor" && s.project ? <Editor /> : <Home />}
+      {!s.appState ? <Splash connected={s.connected} /> : screen === "editor" && s.project ? <Editor key={s.project.id} /> : <Home />}
       <div className="toasts">
         {s.toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>

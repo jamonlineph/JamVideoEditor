@@ -7,6 +7,8 @@ import { decodePcm, renderAudioMix, speechAvailable, visionAvailable, whisperAva
 import { defineTool } from "../defineTool.js";
 import { round } from "./common.js";
 
+const playbackMixes = new Map<string, Promise<void>>();
+
 /** Tools the desktop app uses for playback and drawing (agents can use them too). */
 export const uiTools = [
   defineTool({
@@ -20,19 +22,33 @@ export const uiTools = [
       const host = ctx.host;
       const dir = path.join(host.projectDirPath, "cache", "playback");
       fs.mkdirSync(dir, { recursive: true });
-      const key = `${host.projectId}-${host.session.version}`;
+      const { project } = host;
+      const { version } = host.session;
+      const key = `${host.projectId}-${version}`;
       const file = path.join(dir, `mix-${key}.wav`);
       if (!fs.existsSync(file)) {
-        const mix = await renderAudioMix(host.project);
-        const tmp = `${file}.part`;
-        writeWav(tmp, mix.samples, mix.sampleRate, 2);
-        fs.renameSync(tmp, file);
-        // Keep only the latest few mixes.
-        const old = fs.readdirSync(dir).filter((f) => f.startsWith("mix-") && f.endsWith(".wav")).map((f) => path.join(dir, f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs).slice(4);
-        for (const f of old) fs.rmSync(f, { force: true });
+        let pending = playbackMixes.get(file);
+        if (!pending) {
+          pending = renderAudioMix(project).then((mix) => {
+            const tmp = `${file}.part`;
+            try {
+              writeWav(tmp, mix.samples, mix.sampleRate, 2);
+              fs.renameSync(tmp, file);
+            } finally {
+              fs.rmSync(tmp, { force: true });
+            }
+            // Keep the new mix and the three most recent previous mixes.
+            const old = fs.readdirSync(dir).filter((f) => f.startsWith("mix-") && f.endsWith(".wav"))
+              .map((f) => path.join(dir, f)).filter((f) => f !== file)
+              .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs).slice(3);
+            for (const f of old) fs.rmSync(f, { force: true });
+          }).finally(() => playbackMixes.delete(file));
+          playbackMixes.set(file, pending);
+        }
+        await pending;
       }
       const seconds = (fs.statSync(file).size - 44) / (48000 * 2 * 4);
-      return { path: file, version: host.session.version, durationSeconds: round(seconds, 3) };
+      return { path: file, version, durationSeconds: round(seconds, 3) };
     },
   }),
   defineTool({

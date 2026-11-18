@@ -9,11 +9,12 @@ export interface UiState {
   dockTab: "media" | "audio" | "text" | "effects";
   panel: string | null;
   showGuides: boolean;
+  previewQuality: "auto" | "draft" | "high";
   recorder: boolean;
   exportOpen: boolean;
 }
 
-let state: UiState = { playhead: 0, playing: false, loop: false, pxPerSecond: 60, dockTab: "media", panel: null, showGuides: false, recorder: false, exportOpen: false };
+let state: UiState = { playhead: 0, playing: false, loop: false, pxPerSecond: 60, dockTab: "media", panel: null, showGuides: false, previewQuality: "auto", recorder: false, exportOpen: false };
 const listeners = new Set<() => void>();
 
 export const ui = {
@@ -24,7 +25,7 @@ export const ui = {
   },
   subscribe(fn: () => void) {
     listeners.add(fn);
-    return () => listeners.delete(fn);
+    return () => { listeners.delete(fn); };
   },
 };
 
@@ -36,8 +37,8 @@ export function seek(seconds: number) {
   window.dispatchEvent(new CustomEvent("openedits-seek", { detail: seconds }));
 }
 
-export function useUi(): UiState {
-  return useSyncExternalStore(ui.subscribe, ui.get);
+export function useUi<K extends keyof UiState>(key: K): UiState[K] {
+  return useSyncExternalStore(ui.subscribe, () => ui.get()[key]);
 }
 
 export function formatTime(t: number, fps = 30): string {

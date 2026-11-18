@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { produce } from "immer";
-import { compositionDuration, renderSizeFor, type DrawLayer, type Element, type Project } from "@openedits/core";
-import { live, useLive } from "./live.js";
+import { clipBoundaries, compositionDuration, type DrawLayer, type Element, type Project } from "@openedits/core";
+import { live, useLive, WEB } from "./live.js";
 import { Player, Preview } from "./preview.js";
 import { formatTime, ui, useUi, capturePointer } from "./uiStore.js";
 import { recorder } from "./recorder.js";
@@ -23,22 +23,40 @@ function layerBox(l: DrawLayer): { cx: number; cy: number; w: number; h: number;
   return { cx: l.cx, cy: l.cy, w: l.width, h: l.height, rot: l.rotationDegrees };
 }
 
-export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
+export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(function Viewport({ onOpenLibrary }, ref) {
   const s = useLive();
-  const u = useUi();
+  const playing = useUi("playing");
+  const loop = useUi("loop");
+  const showGuides = useUi("showGuides");
+  const showRecorder = useUi("recorder");
+  const quality = useUi("previewQuality");
   const project = s.project!;
   const wrap = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [engine, setEngine] = useState<{ preview: Preview; player: Player } | null>(null);
-  const [box, setBox] = useState({ w: 400, h: 600 });
+  const [box, setBox] = useState({ w: 0, h: 0 });
   const [drag, setDrag] = useState<Drag | null>(null);
   const [, force] = useState(0);
   const dragProject = useRef<Project | null>(null);
 
   useLayoutEffect(() => {
     const preview = new Preview(canvasRef.current!);
-    preview.onDrawn = () => force((n) => n + 1);
-    setEngine({ preview, player: new Player(preview) });
+    const player = new Player(preview);
+    preview.onDrawn = () => {
+      if (!ui.get().playing) force((n) => n + 1);
+    };
+    let previous = ui.get();
+    const unsubscribe = ui.subscribe(() => {
+      const next = ui.get();
+      if (!next.playing && (next.playhead !== previous.playhead || previous.playing)) void preview.draw(next.playhead);
+      previous = next;
+    });
+    setEngine({ preview, player });
+    return () => {
+      unsubscribe();
+      player.dispose();
+      preview.dispose();
+    };
   }, []);
   useImperativeHandle(ref, () => ({ player: engine?.player ?? null }), [engine]);
 
@@ -46,30 +64,25 @@ export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
   useEffect(() => {
     const el = wrap.current!;
     const ro = new ResizeObserver(() => {
-      const size = renderSizeFor(project, 1000);
-      const aspect = size.width / size.height;
-      const availW = el.clientWidth - 32;
-      const availH = el.clientHeight - 32;
+      const [width, height] = project.canvas.aspectRatio.split(":").map(Number);
+      const aspect = width / height;
+      const availW = Math.max(0, el.clientWidth - 24);
+      const availH = Math.max(0, el.clientHeight - 24);
       const w = Math.min(availW, availH * aspect);
-      setBox({ w, h: w / aspect });
+      setBox((previous) => previous.w === w && previous.h === w / aspect ? previous : { w, h: w / aspect });
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, [project.canvas.aspectRatio]);
 
-  // Preview resolution follows the on-screen size (sharp on Retina, cheap when small).
-  useEffect(() => {
+  const maxShortSide = quality === "draft" ? 360 : quality === "high" || !WEB ? 1080 : 720;
+  const shortSide = Math.max(180, Math.min(maxShortSide, Math.round(Math.min(box.w, box.h) * Math.min(2, devicePixelRatio) / 90) * 90));
+  useLayoutEffect(() => {
     if (!engine) return;
-    const short = Math.min(box.w, box.h) * Math.min(2, window.devicePixelRatio || 1);
-    engine.preview.shortSide = Math.max(240, Math.min(1080, Math.round(short / 2) * 2));
-  }, [engine, box]);
-
-  // Redraw when the project changes or the playhead moves (playback draws on its own).
-  useEffect(() => {
-    if (!engine) return;
+    engine.preview.shortSide = shortSide;
     engine.preview.setProject(dragProject.current ?? project);
-    if (!u.playing) void engine.preview.draw(u.playhead);
-  }, [engine, s.revision, u.playhead, u.playing, box]);
+    if (!ui.get().playing) void engine.preview.draw(ui.get().playhead);
+  }, [engine, project, shortSide]);
 
   const scene = engine?.preview.scene;
   const scale = scene ? box.w / scene.width : 1;
@@ -117,7 +130,16 @@ export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
       if (target && "transform" in target) Object.assign(target.transform, patch);
     });
     engine.preview.setProject(dragProject.current);
-    void engine.preview.draw(u.playhead);
+    void engine.preview.draw(ui.get().playhead);
+  };
+
+  const clearDrag = () => {
+    dragProject.current = null;
+    setDrag(null);
+    if (engine) {
+      engine.preview.setProject(live.state.project);
+      if (!ui.get().playing) void engine.preview.draw(ui.get().playhead);
+    }
   };
 
   const onUp = (e: React.PointerEvent) => {
@@ -125,13 +147,11 @@ export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
     const patch = nextTransform(drag, e);
     const moved = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 2;
     setDrag(null);
-    if (moved) {
-      const target = project.elements[drag.elementId];
+    const target = project.elements[drag.elementId];
+    if (moved && target) {
       const keyed = Object.keys(patch).some((k) => target.keyframes[k as keyof typeof target.keyframes]?.length);
-      void live.run("setTransform", { elementId: drag.elementId, ...patch, ...(keyed ? { time: u.playhead } : {}) }).finally(() => {
-        dragProject.current = null;
-      });
-    } else dragProject.current = null;
+      void live.run("setTransform", { elementId: drag.elementId, ...patch, ...(keyed ? { time: ui.get().playhead } : {}) }).finally(clearDrag);
+    } else clearDrag();
   };
 
   /** Click on the picture: select the top-most layer under the pointer. */
@@ -155,12 +175,38 @@ export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
 
   const duration = compositionDuration(project);
   const b = layer ? layerBox(layer) : null;
+  function jumpToEdit(direction: -1 | 1) {
+    const time = ui.get().playhead;
+    const edges = clipBoundaries(project);
+    const target = direction < 0 ? edges.findLast((edge) => edge < time - 1e-3) ?? 0 : edges.find((edge) => edge > time + 1e-3) ?? duration;
+    engine?.player.seek(target);
+  }
   return (
-    <div className="stage">
-      <div className="viewport" ref={wrap} onPointerMove={onMove} onPointerUp={onUp}>
+    <section className="stage" aria-label="Preview">
+      <div className="preview-bar">
+        <strong>Preview</strong>
+        <label>
+          <span className="muted">Quality</span>
+          <select aria-label="Preview quality" title="Affects preview playback only" value={quality} onChange={(e) => {
+            const value = e.target.value;
+            if (value === "auto" || value === "draft" || value === "high") ui.set({ previewQuality: value });
+          }}>
+            <option value="auto">Auto</option>
+            <option value="draft">Draft</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </div>
+      <div className="viewport" ref={wrap} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={clearDrag}>
         <canvas ref={canvasRef} className="preview" style={{ width: box.w, height: box.h }} onMouseDown={pick} />
-        {u.showGuides && <div className="guides" style={{ width: box.w, height: box.h, backgroundSize: `${box.w / 10}px ${box.h / 10}px` }} />}
-        {b && !u.playing && (
+        {!duration && !showRecorder && !s.appState?.teleprompterOpen && (
+          <div className="preview-empty">
+            <span>Your timeline is empty</span>
+            <button className="ghost" onClick={onOpenLibrary}>Open library</button>
+          </div>
+        )}
+        {showGuides && <div className="guides" style={{ width: box.w, height: box.h, backgroundSize: `${box.w / 10}px ${box.h / 10}px` }} />}
+        {b && !playing && (
           <div
             className="gizmo"
             style={{ width: b.w * scale, height: b.h * scale, transform: `translate(${(b.cx - b.w / 2) * scale - box.w / 2}px, ${(b.cy - b.h / 2) * scale - box.h / 2}px) rotate(${b.rot}deg)`, left: "50%", top: "50%" }}
@@ -178,41 +224,41 @@ export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
           </div>
         )}
         {s.appState?.teleprompterOpen && <Teleprompter />}
-        {u.recorder && <RecorderPanel />}
+        {showRecorder && <RecorderPanel />}
       </div>
       <div className="transport">
         <div className="left">
-          <button className={u.loop ? "on icon" : "icon"} onClick={() => ui.set({ loop: !u.loop })} title="Loop">
+          <button className={loop ? "on icon" : "icon"} aria-label="Loop" aria-pressed={loop} onClick={() => ui.set({ loop: !loop })} title="Loop">
             ⟲
           </button>
         </div>
         <div className="center">
-          <button className="icon ghost" title="Previous edit" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }))}>
-            ⏮
+          <button className="icon ghost jump-edit" aria-label="Previous edit" title="Previous edit" onClick={() => jumpToEdit(-1)}>
+            <span className="transport-glyph previous-edit" aria-hidden="true" />
           </button>
-          <button className="icon ghost" title="Back one frame" onClick={() => engine?.player.seek(u.playhead - 1 / project.canvas.fps)}>
-            ◀︎
+          <button className="icon ghost" aria-label="Back one frame" title="Back one frame" onClick={() => engine?.player.seek(ui.get().playhead - 1 / project.canvas.fps)}>
+            <span className="transport-glyph back-frame" aria-hidden="true" />
           </button>
-          <button className="icon play" onClick={() => engine?.player.toggle()} title="Play / pause (Space)">
-            {u.playing ? "❚❚" : "▶"}
+          <button className="icon play" disabled={!duration} onClick={() => engine?.player.toggle()} aria-label={playing ? "Pause" : "Play"} title="Play / pause (Space)">
+            <span className={`transport-glyph ${playing ? "pause-glyph" : "play-glyph"}`} aria-hidden="true" />
           </button>
-          <button className="icon ghost" title="Forward one frame" onClick={() => engine?.player.seek(u.playhead + 1 / project.canvas.fps)}>
-            ▶︎
+          <button className="icon ghost" aria-label="Forward one frame" title="Forward one frame" onClick={() => engine?.player.seek(ui.get().playhead + 1 / project.canvas.fps)}>
+            <span className="transport-glyph forward-frame" aria-hidden="true" />
           </button>
-          <button className="icon ghost" title="Next edit" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }))}>
-            ⏭
+          <button className="icon ghost jump-edit" aria-label="Next edit" title="Next edit" onClick={() => jumpToEdit(1)}>
+            <span className="transport-glyph next-edit" aria-hidden="true" />
           </button>
-          <span className="time">
-            {formatTime(u.playhead, project.canvas.fps)} / {formatTime(duration, project.canvas.fps)}
-          </span>
         </div>
-        <div className="right">
-          <span className="muted small">{scene ? `${scene.width}×${scene.height}` : ""}</span>
-        </div>
+        <Timecode duration={duration} fps={project.canvas.fps} />
       </div>
-    </div>
+    </section>
   );
 });
+
+function Timecode({ duration, fps }: { duration: number; fps: number }) {
+  const playhead = useUi("playhead");
+  return <span className="time" title="Playhead and total duration"><strong>{formatTime(playhead, fps)}</strong><span> / {formatTime(duration, fps)}</span></span>;
+}
 
 function Teleprompter() {
   const s = useLive();

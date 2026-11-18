@@ -26,6 +26,8 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 - The app contains the whole editor: the engine, FFmpeg and ffprobe, eSpeak NG for text to speech, and the same UI and compositor as the desktop app. One `.apk` covers 64-bit ARM (`arm64-v8a`) and Intel/AMD (`x86_64`) devices, Android 10 and later.
 - **Importing:** *Import* and *Start from videos* open Android's file picker. You can also **Share** videos, music or pictures to OpenEdits Studio from Files, Photos or any other app (or *Open with* for videos): they land in the Home screen's *Inbox*, and in the open project.
 - **Exports** are kept in the app's workspace; the export dialog's **Download** button copies a video to *Movies/OpenEdits Studio* (it then shows up in Photos and Files), audio to *Music* and pictures to *Pictures*.
+- **Editing in a resized window:** use **Library** to import or add media and **Inspector** to edit the selected clip. These panels open over the preview in compact windows. **Preview → Quality → Draft** reduces playback resolution while keeping your export settings. **Fit** shows the full cut in the timeline.
+- **Export progress** stays in the editor header if you hide the dialog. Reopen **Export** to cancel an active render or download a finished video.
 - **Voiceovers** use the device's microphone (the app asks the first time).
 - **Exports keep going in the background**: while the editor is open the app shows a quiet notification, which keeps Android from pausing it.
 - What is not in the app: transcripts and captions from speech (whisper.cpp and its model are not bundled) and the Apple Vision features (macOS only). The editor greys these out.
@@ -44,7 +46,7 @@ The native programs come from [Termux](https://termux.dev)'s package repository 
 Build it yourself with the Android SDK (build-tools and an `android-34`+ platform; no Gradle):
 
 ```bash
-ANDROID_HOME=/path/to/android-sdk apps/android/build.sh
+ANDROID_HOME=/path/to/android-sdk npm run dist:android
 ```
 
 The `.apk` lands in `release/dist`. Set `ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` to sign with your own key, so new versions install over old ones (the CI workflow reads them from secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`). Without them each build has a throwaway key, and installing a newer build means uninstalling the old one first. `ANDROID_ABIS=arm64-v8a` builds a smaller APK for ARM only. CI installs every build on an Android emulator and edits, renders and exports a video with it (`apps/android/emulator-test.sh`).

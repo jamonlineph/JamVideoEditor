@@ -7,7 +7,7 @@
 #
 # Steps: stage-app.mjs builds the engine and the UI into build/stage/assets; fetch-runtime.mjs puts
 # Android builds of Node.js, FFmpeg and eSpeak NG (from Termux's packages) into build/stage/lib (it
-# is skipped when that folder exists: delete it to fetch again). ANDROID_ABIS limits the processors
+# is skipped when the requested runtimes are staged). ANDROID_ABIS limits the processors
 # (default: arm64-v8a,x86_64).
 #
 # Signing: set ANDROID_KEYSTORE (file), ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS to sign with
@@ -21,6 +21,10 @@ version="$(node -p "require('$root/package.json').version")"
 out="${1:-$root/release/dist/OpenEdits-Studio-$version-android.apk}"
 stage="$here/build/stage"
 abis="${ANDROID_ABIS:-arm64-v8a,x86_64}"
+case "$abis" in
+  arm64-v8a|x86_64|arm64-v8a,x86_64|x86_64,arm64-v8a) ;;
+  *) echo "ANDROID_ABIS must select arm64-v8a, x86_64, or both" >&2; exit 1 ;;
+esac
 
 tools="$(ls -d "$sdk"/build-tools/*/ | sort -V | tail -1)"
 platform=""
@@ -32,9 +36,10 @@ echo "build-tools: $tools"
 echo "platform:    $platform"
 
 node "$here/stage-app.mjs" "$stage"
-if [ ! -d "$stage/lib" ]; then node "$here/fetch-runtime.mjs" "$stage" --abi "$abis"; fi
 for abi in ${abis//,/ }; do
-  [ -f "$stage/assets/runtime/$abi.json" ] || { echo "No runtime for $abi in $stage (delete $stage/lib and run again)" >&2; exit 1; }
+  if [ ! -d "$stage/lib/$abi" ] || [ ! -f "$stage/assets/runtime/$abi.json" ]; then
+    node "$here/fetch-runtime.mjs" "$stage" --abi "$abi"
+  fi
 done
 
 work="$here/build/apk"
@@ -70,7 +75,17 @@ if [ -z "$keystore" ]; then
   fi
   echo "signing with a throwaway key (set ANDROID_KEYSTORE to use your own)"
 fi
-"$tools/apksigner" sign --ks "$keystore" --ks-pass "pass:$password" --key-pass "pass:$password" --ks-key-alias "$alias" --out "$out" "$work/aligned.apk"
-"$tools/apksigner" verify "$out"
+signed="$(mktemp "$out.tmp.XXXXXX")"
+trap 'rm -f "$signed"' EXIT
+"$tools/apksigner" sign --ks "$keystore" --ks-pass "pass:$password" --key-pass "pass:$password" --ks-key-alias "$alias" \
+  --v4-signing-enabled false --out "$signed" "$work/aligned.apk"
+"$tools/apksigner" verify "$signed"
+for abi in ${abis//,/ }; do
+  for program in node ffmpeg ffprobe espeak-ng; do
+    unzip -p "$signed" "lib/$abi/lib_bin_$program.so" >/dev/null
+  done
+  unzip -p "$signed" "assets/runtime/$abi.json" >/dev/null
+done
+mv -f "$signed" "$out"
 rm -f "$out.idsig"
 echo "built $out ($(du -h "$out" | cut -f1))"
