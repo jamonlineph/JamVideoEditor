@@ -211,6 +211,8 @@ final class Engine {
         env.put("OPENEDITS_FFPROBE", new File(rt.bin, "ffprobe").getPath());
         // The compositor runs in this app's WebView (MainActivity), not in an Electron window.
         env.put("OPENEDITS_RENDER_HOST", "web");
+        // The compositor page's errors and each render request go to the log (logcat: OpenEdits/engine).
+        env.put("OPENEDITS_RENDER_DEBUG", "1");
         env.put("NODE_OPTIONS", "--max-old-space-size=" + heapMegabytes());
 
         final Process p = pb.start();

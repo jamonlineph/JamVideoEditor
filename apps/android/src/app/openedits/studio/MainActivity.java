@@ -194,6 +194,13 @@ public class MainActivity extends Activity implements Engine.Listener {
                 return recoverFromCrash();
             }
         });
+        renderer.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                Log.i(TAG + "/render", m.messageLevel() + " " + m.message() + " (" + m.sourceId() + ":" + m.lineNumber() + ")");
+                return true;
+            }
+        });
         // Behind the editor and never seen, but attached and "visible", so Android does not throttle it.
         root.addView(renderer, 0, match());
 
@@ -232,7 +239,9 @@ public class MainActivity extends Activity implements Engine.Listener {
     }
 
     private void loadRenderer() {
-        if (renderer != null && port > 0) renderer.loadUrl(base() + "render-host.html");
+        if (renderer == null || port <= 0) return;
+        Log.i(TAG, "loading the compositor page");
+        renderer.loadUrl(base() + "render-host.html");
     }
 
     /** All WebViews share one renderer process: if it dies, start both pages again. */
@@ -295,6 +304,13 @@ public class MainActivity extends Activity implements Engine.Listener {
     }
 
     private final class EditorChrome extends WebChromeClient {
+        @Override
+        public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+            if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR || m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.WARNING)
+                Log.i(TAG + "/page", m.messageLevel() + " " + m.message() + " (" + m.sourceId() + ":" + m.lineNumber() + ")");
+            return true;
+        }
+
         @Override
         public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
             if (chooser != null) chooser.onReceiveValue(null);

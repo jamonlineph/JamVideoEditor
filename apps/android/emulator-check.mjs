@@ -18,7 +18,7 @@ fs.mkdirSync(outDir, { recursive: true });
 const step = (text) => console.log(`--- ${text}`);
 
 step("upload a clip, as the UI's Import button does");
-const up = await fetch(`${base}/web/upload?name=${encodeURIComponent(path.basename(clip))}`, { method: "POST", headers, body: fs.readFileSync(clip) });
+const up = await fetch(`${base}/web/upload?name=${encodeURIComponent(path.basename(clip))}`, { method: "POST", headers, body: fs.readFileSync(clip), signal: AbortSignal.timeout(60_000) });
 const uploaded = await up.json();
 if (!up.ok || !uploaded.path) throw new Error(`upload failed: ${JSON.stringify(uploaded)}`);
 console.log(`uploaded to ${uploaded.path}`);
@@ -39,10 +39,15 @@ ws.on("message", (data) => {
   if (msg.ok) w.resolve(msg.result);
   else w.reject(new Error(`${w.tool}: ${JSON.stringify(msg.error)}`));
 });
-const call = (tool, args = {}) =>
+// Every call has a deadline, so a stuck render fails the test (with the app's log) instead of hanging it.
+const call = (tool, args = {}, seconds = 180) =>
   new Promise((resolve, reject) => {
     const id = ++seq;
-    waiting.set(id, { resolve, reject, tool });
+    const timer = setTimeout(() => {
+      waiting.delete(id);
+      reject(new Error(`${tool} did not answer within ${seconds}s`));
+    }, seconds * 1000);
+    waiting.set(id, { resolve: (v) => (clearTimeout(timer), resolve(v)), reject: (e) => (clearTimeout(timer), reject(e)), tool });
     ws.send(JSON.stringify({ type: "call", id, tool, args }));
   });
 
@@ -69,7 +74,7 @@ step("export");
 const job = await call("export", {});
 console.log(`job ${job.jobId}`);
 let status;
-for (let i = 0; i < 600; i++) {
+for (let i = 0; i < 450; i++) {
   await new Promise((r) => setTimeout(r, 2000));
   status = await call("exportStatus", { jobId: job.jobId });
   if (i % 5 === 0) console.log(`  ${status.status} ${Math.round((status.progress ?? 0) * 100)}% ${status.message ?? ""}`);
@@ -86,3 +91,4 @@ if (!/codec_type=video/.test(probe) || !/codec_type=audio/.test(probe)) throw ne
 
 ws.close();
 console.log("android editor OK");
+process.exit(0);

@@ -18,6 +18,7 @@ interface HostMessage {
   error?: string;
   progress?: Record<string, unknown>;
   message?: string;
+  level?: string;
   versions?: Record<string, string>;
 }
 
@@ -51,13 +52,14 @@ interface PageSocket {
 
 type PageListener = (page: { socket: PageSocket; link: { onMessage?: (msg: HostMessage) => void; onClose?: () => void } }) => void;
 
-let currentPage: { socket: PageSocket; ready: boolean; versions: Record<string, string>; link: { onMessage?: (msg: HostMessage) => void; onClose?: () => void } } | null = null;
+/** A connected page; `fatal` is set once it reported that it cannot render (e.g. no WebGL2), and it is never used after that. */
+let currentPage: { socket: PageSocket; ready: boolean; fatal?: string; versions: Record<string, string>; link: { onMessage?: (msg: HostMessage) => void; onClose?: () => void } } | null = null;
 const pageWaiters = new Set<PageListener>();
 
 /** Called by the HTTP server when a render page connects. A newer page replaces an older one. */
 export function attachRenderPage(socket: PageSocket): RenderPageLink {
   const previous = currentPage;
-  const entry = { socket, ready: false, versions: {} as Record<string, string>, link: {} as { onMessage?: (msg: HostMessage) => void; onClose?: () => void } };
+  const entry: NonNullable<typeof currentPage> = { socket, ready: false, versions: {}, link: {} };
   currentPage = entry;
   if (previous) {
     previous.link.onClose?.();
@@ -66,7 +68,17 @@ export function attachRenderPage(socket: PageSocket): RenderPageLink {
   return {
     message(raw) {
       const msg = raw as HostMessage;
+      if (msg?.type === "log") {
+        if (process.env.OPENEDITS_RENDER_DEBUG) process.stderr.write(`[render-host] ${msg.level ?? "log"}: ${msg.message}\n`);
+        return;
+      }
+      if (msg?.type === "fatal") {
+        entry.fatal = msg.message ?? "unknown error";
+        process.stderr.write(`[render-host] the render page cannot render: ${entry.fatal}\n`);
+        for (const w of [...pageWaiters]) w(entry);
+      }
       if (msg?.type === "ready") {
+        if (process.env.OPENEDITS_RENDER_DEBUG) process.stderr.write(`[render-host] page ready ${JSON.stringify(msg.versions ?? {})}\n`);
         entry.ready = true;
         entry.versions = msg.versions ?? {};
         for (const w of [...pageWaiters]) w(entry);
@@ -75,6 +87,7 @@ export function attachRenderPage(socket: PageSocket): RenderPageLink {
       entry.link.onMessage?.(msg);
     },
     closed() {
+      if (process.env.OPENEDITS_RENDER_DEBUG) process.stderr.write("[render-host] page disconnected\n");
       if (currentPage === entry) currentPage = null;
       entry.link.onClose?.();
     },
@@ -83,7 +96,7 @@ export function attachRenderPage(socket: PageSocket): RenderPageLink {
 
 /** Whether a render page is connected and ready (web mode). */
 export function renderPageConnected(): boolean {
-  return !!currentPage?.ready && currentPage.socket.open;
+  return !!currentPage && (currentPage.ready || !!currentPage.fatal) && currentPage.socket.open;
 }
 
 /** Talks to the page that runs the compositor (the hidden Electron window, or a connected web page). Started on first use, stopped when idle. */
@@ -123,6 +136,7 @@ export class RenderHostClient {
     if (!p) return;
     if (msg.progress) return p.onProgress?.(msg.progress);
     this.pending.delete(msg.id);
+    if (process.env.OPENEDITS_RENDER_DEBUG) process.stderr.write(`[render-host] #${msg.id} ${msg.ok ? "done" : `failed: ${msg.error}`}\n`);
     if (msg.ok) p.resolve(msg.result);
     else p.reject(new EditError("INTERNAL", `Render failed: ${msg.error}`));
   }
@@ -146,13 +160,17 @@ export class RenderHostClient {
         pageWaiters.delete(use);
         clearTimeout(timer);
         const entry = page as NonNullable<typeof currentPage>;
+        if (entry.fatal) {
+          this.starting = null;
+          return reject(new EditError("INTERNAL", `The render page cannot render: ${entry.fatal}`));
+        }
         const transport: Transport = {
           send: (msg, cb) => {
             if (!entry.socket.open) return cb?.(new Error("the render page closed"));
             entry.socket.send(JSON.stringify(msg), (err) => cb?.(err ?? null));
           },
           get connected() {
-            return currentPage === entry && entry.socket.open;
+            return currentPage === entry && entry.socket.open && !entry.fatal;
           },
           close: () => {
             entry.link.onMessage = undefined;
@@ -248,7 +266,9 @@ export class RenderHostClient {
     await this.start();
     this.touch();
     const id = ++this.seq;
-    const transport = this.transport!;
+    if (process.env.OPENEDITS_RENDER_DEBUG) process.stderr.write(`[render-host] #${id} ${method}\n`);
+    const transport = this.transport;
+    if (!transport?.connected) throw new EditError("INTERNAL", "The render host stopped before the request could be sent");
     return new Promise<T>((resolve, reject) => {
       const abort = () => transport.send({ method: "cancel", params: { id } });
       opts.signal?.addEventListener("abort", abort, { once: true });

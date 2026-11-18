@@ -41,4 +41,17 @@ export const ipcRenderer = {
   },
 };
 
+// What the Electron window's console-message handler did: errors and warnings reach the engine's log
+// (shown with OPENEDITS_RENDER_DEBUG=1).
+const report = (level: string, message: string) => ipcRenderer.send("to-engine", { type: "log", level, message });
+for (const level of ["error", "warn"] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]) => {
+    original(...args);
+    report(level, args.map((a) => (a instanceof Error ? (a.stack ?? a.message) : typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+  };
+}
+addEventListener("error", (e) => report("error", `${e.message} (${e.filename}:${e.lineno})`));
+addEventListener("unhandledrejection", (e) => report("error", `unhandled rejection: ${(e.reason as Error)?.stack ?? e.reason}`));
+
 connect();

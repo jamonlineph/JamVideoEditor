@@ -183,4 +183,17 @@ describe("render page over a socket (OPENEDITS_RENDER_HOST=web)", () => {
     expect(fs.readFileSync(r2.result.path, "utf8")).toBe("second");
     second.close();
   });
+
+  it("fails fast when the page reports it cannot render (no WebGL2), instead of waiting for it", async () => {
+    await new Promise((r) => setTimeout(r, 100));
+    const broken = await connectPage(() => {});
+    broken.send(JSON.stringify({ type: "fatal", message: "WebGL2 is not available" }));
+    await new Promise((r) => setTimeout(r, 100));
+    const started = Date.now();
+    const r = (await runTool(tools.get("captureFrame")!, { timeSeconds: 0.5 }, { host, source: "test" })) as { ok: false; error: { message: string } };
+    expect(r.ok).toBe(false);
+    expect(r.error.message).toContain("WebGL2 is not available");
+    expect(Date.now() - started).toBeLessThan(5000);
+    broken.close();
+  });
 });
