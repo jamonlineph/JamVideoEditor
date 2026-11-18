@@ -13,6 +13,8 @@ import {
   setMask,
   setOpacity,
   setBlendMode,
+  setClipAnimation,
+  getCatalogItem,
   BlendModeSchema,
   setReversed,
   setSpeed,
@@ -22,6 +24,8 @@ import {
 } from "@openedits/core";
 import { defineTool } from "../defineTool.js";
 import { easingInput, element, expectedVersion, hexColor, keyframeProperty, mutate, resolveElementId, round, transformInput } from "./common.js";
+
+const clipAnimRef = z.object({ id: z.string(), durationSeconds: z.number().positive().max(10).optional() });
 
 const keyframeItem = z.object({
   elementId: z.string().optional(),
@@ -178,6 +182,25 @@ export const transformTools = [
     handler: (a, ctx) => {
       const id = resolveElementId(ctx, a.elementId);
       return mutate(ctx, "Opacity", (c) => setOpacity(c, requireElement(c.draft, id), a.opacity), { expectedVersion: a.expectedVersion });
+    },
+  }),
+  defineTool({
+    name: "setClipAnimation",
+    title: "Set clip animation",
+    category: "transform",
+    description: "In / out / combo animations for a video, photo, sticker or shape (listCatalog kind clipAnimations; combo goes in the loop slot). id \"none\" clears a slot. Text uses setTextAnimation.",
+    input: z.object({ elementId: z.string().optional(), in: clipAnimRef.optional(), out: clipAnimRef.optional(), loop: clipAnimRef.optional(), expectedVersion }),
+    handler: (a, ctx) => {
+      const id = resolveElementId(ctx, a.elementId);
+      const ref = (slot: "in" | "out" | "loop", r?: { id: string; durationSeconds?: number }) => {
+        if (!r) return undefined;
+        if (r.id === "none") return { id: "none", durationSeconds: 0.5 };
+        const data = getCatalogItem("clipAnimations", r.id).data as { slot: string; defaultDurationSeconds: number };
+        if (data.slot !== slot) throw new EditError("INVALID_ARGUMENT", `Animation "${r.id}" is ${data.slot === "loop" ? "a combo" : `an ${data.slot}`} animation, not ${slot}`);
+        return { id: r.id, durationSeconds: r.durationSeconds ?? data.defaultDurationSeconds };
+      };
+      const anim = { in: ref("in", a.in), out: ref("out", a.out), loop: ref("loop", a.loop) };
+      return mutate(ctx, "Clip animation", (c) => setClipAnimation(c, requireElement(c.draft, id), anim), { expectedVersion: a.expectedVersion });
     },
   }),
   defineTool({

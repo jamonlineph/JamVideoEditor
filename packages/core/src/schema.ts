@@ -380,6 +380,8 @@ export const VideoElementSchema = z.object({
   ...audioProps,
   crop: CropSchema.optional(),
   flip: FlipSchema,
+  /** In / out / combo clip animations (listCatalog kind clipAnimations). */
+  animation: TextAnimationSchema.optional(),
   /** True once audio was extracted to a separate element. */
   audioDetached: z.boolean(),
   linkedAudioId: Id.optional(),
@@ -393,6 +395,7 @@ export const ImageElementSchema = z.object({
   mediaId: Id,
   crop: CropSchema.optional(),
   flip: FlipSchema,
+  animation: TextAnimationSchema.optional(),
 });
 
 export const AudioRoleSchema = z.enum(["music", "sfx", "voiceover", "extracted", "tts"]);
@@ -444,6 +447,7 @@ export const ShapeElementSchema = z.object({
   strokeColor: HexColor.optional(),
   strokeWidth: z.number().min(0).max(0.2),
   cornerRadius: z.number().min(0).max(1),
+  animation: TextAnimationSchema.optional(),
 });
 
 export const StickerElementSchema = z.object({
@@ -452,6 +456,7 @@ export const StickerElementSchema = z.object({
   ...visualProps,
   stickerId: z.string().optional(),
   cutoutMaskId: z.string().optional(),
+  animation: TextAnimationSchema.optional(),
 });
 
 export const AdjustmentElementSchema = z.object({

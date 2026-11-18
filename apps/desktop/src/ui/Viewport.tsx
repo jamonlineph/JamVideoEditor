@@ -5,6 +5,8 @@ import { live, useLive, WEB } from "./live.js";
 import { Player, Preview } from "./preview.js";
 import { formatTime, ui, useUi, capturePointer } from "./uiStore.js";
 import { recorder } from "./recorder.js";
+import { Icon } from "./Icon.js";
+import { importFiles } from "./Dock.js";
 
 export interface ViewportApi {
   player: Player | null;
@@ -183,26 +185,17 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
   }
   return (
     <section className="stage" aria-label="Preview">
-      <div className="preview-bar">
-        <strong>Preview</strong>
-        <label>
-          <span className="muted">Quality</span>
-          <select aria-label="Preview quality" title="Affects preview playback only" value={quality} onChange={(e) => {
-            const value = e.target.value;
-            if (value === "auto" || value === "draft" || value === "high") ui.set({ previewQuality: value });
-          }}>
-            <option value="auto">Auto</option>
-            <option value="draft">Draft</option>
-            <option value="high">High</option>
-          </select>
-        </label>
-      </div>
       <div className="viewport" ref={wrap} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={clearDrag}>
         <canvas ref={canvasRef} className="preview" style={{ width: box.w, height: box.h }} onMouseDown={pick} />
         {!duration && !showRecorder && !s.appState?.teleprompterOpen && (
           <div className="preview-empty">
-            <span>Your timeline is empty</span>
-            <button className="ghost" onClick={onOpenLibrary}>Open library</button>
+            <span className="empty-icon"><Icon name="media" size={30} /></span>
+            <b>Start your edit</b>
+            <span className="muted">Add videos and photos, then trim, add music, text and effects.</span>
+            <div className="row">
+              <button className="primary" onClick={() => void importFiles()}><Icon name="import" size={16} /> Import media</button>
+              <button onClick={onOpenLibrary}>Open library</button>
+            </div>
           </div>
         )}
         {showGuides && <div className="guides" style={{ width: box.w, height: box.h, backgroundSize: `${box.w / 10}px ${box.h / 10}px` }} />}
@@ -227,29 +220,56 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
         {showRecorder && <RecorderPanel />}
       </div>
       <div className="transport">
-        <div className="left">
-          <button className={loop ? "on icon" : "icon"} aria-label="Loop" aria-pressed={loop} onClick={() => ui.set({ loop: !loop })} title="Loop">
-            ⟲
-          </button>
-        </div>
+        <Timecode duration={duration} fps={project.canvas.fps} />
         <div className="center">
           <button className="icon ghost jump-edit" aria-label="Previous edit" title="Previous edit" onClick={() => jumpToEdit(-1)}>
-            <span className="transport-glyph previous-edit" aria-hidden="true" />
+            <Icon name="prevEdit" size={17} />
           </button>
           <button className="icon ghost" aria-label="Back one frame" title="Back one frame" onClick={() => engine?.player.seek(ui.get().playhead - 1 / project.canvas.fps)}>
-            <span className="transport-glyph back-frame" aria-hidden="true" />
+            <Icon name="prevFrame" size={17} />
           </button>
           <button className="icon play" disabled={!duration} onClick={() => engine?.player.toggle()} aria-label={playing ? "Pause" : "Play"} title="Play / pause (Space)">
-            <span className={`transport-glyph ${playing ? "pause-glyph" : "play-glyph"}`} aria-hidden="true" />
+            <Icon name={playing ? "pause" : "play"} size={20} />
           </button>
           <button className="icon ghost" aria-label="Forward one frame" title="Forward one frame" onClick={() => engine?.player.seek(ui.get().playhead + 1 / project.canvas.fps)}>
-            <span className="transport-glyph forward-frame" aria-hidden="true" />
+            <Icon name="nextFrame" size={17} />
           </button>
           <button className="icon ghost jump-edit" aria-label="Next edit" title="Next edit" onClick={() => jumpToEdit(1)}>
-            <span className="transport-glyph next-edit" aria-hidden="true" />
+            <Icon name="nextEdit" size={17} />
           </button>
         </div>
-        <Timecode duration={duration} fps={project.canvas.fps} />
+        <div className="right">
+          <button className={loop ? "on icon ghost" : "icon ghost"} aria-label="Loop" aria-pressed={loop} onClick={() => ui.set({ loop: !loop })} title="Loop playback">
+            <Icon name="loop" size={16} />
+          </button>
+          <button className={showGuides ? "on icon ghost" : "icon ghost"} aria-label="Grid guides" aria-pressed={showGuides} onClick={() => ui.set({ showGuides: !showGuides })} title="Grid guides">
+            <Icon name="grid" size={16} />
+          </button>
+          <label className="pill-select" title="Canvas aspect ratio">
+            <Icon name="ratio" size={15} />
+            <select aria-label="Canvas aspect ratio" value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })}>
+              {["9:16", "16:9", "1:1", "4:5"].map((a) => <option key={a}>{a}</option>)}
+            </select>
+          </label>
+          <label className="pill-select quality" title="Preview quality (playback only; exports keep their settings)">
+            <select aria-label="Preview quality" value={quality} onChange={(e) => {
+              const value = e.target.value;
+              if (value === "auto" || value === "draft" || value === "high") ui.set({ previewQuality: value });
+            }}>
+              <option value="auto">Auto</option>
+              <option value="draft">Draft</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <button className="icon ghost" aria-label="Full screen" title="Full screen preview" onClick={() => {
+            const stage = wrap.current?.closest(".stage");
+            if (!stage) return;
+            if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+            else void stage.requestFullscreen?.().catch(() => {});
+          }}>
+            <Icon name="fullscreen" size={16} />
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -257,7 +277,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
 
 function Timecode({ duration, fps }: { duration: number; fps: number }) {
   const playhead = useUi("playhead");
-  return <span className="time" title="Playhead and total duration"><strong>{formatTime(playhead, fps)}</strong><span> / {formatTime(duration, fps)}</span></span>;
+  return <span className="time" title="Playhead and total duration"><strong>{formatTime(playhead, fps)}</strong><span className="total"> / {formatTime(duration, fps)}</span></span>;
 }
 
 function Teleprompter() {

@@ -187,7 +187,8 @@ export class Live {
 
   toast(kind: Toast["kind"], text: string) {
     const t = { id: ++this.toastSeq, kind, text };
-    this.set({ toasts: [...this.state.toasts.slice(-3), t] });
+    // The same message twice in a row (e.g. one warning per edited cut) shows once.
+    this.set({ toasts: [...this.state.toasts.filter((x) => x.text !== text).slice(-2), t] });
     setTimeout(() => this.set({ toasts: this.state.toasts.filter((x) => x.id !== t.id) }), kind === "error" ? 6000 : 3500);
   }
 }

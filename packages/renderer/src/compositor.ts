@@ -482,6 +482,18 @@ export class Compositor {
       shake: [pct("amount", 30), num("frequency", 8), 0, 0],
       zoom_pulse: [pct("amount", 15), num("frequency", 2), 0, 0],
       denoise: [pct("amount", 40), 0, 0, 0],
+      duotone: [num("shadowHue", 260), num("highlightHue", 30), 0, 0],
+      rainbow: [num("speed", 1), pct("spread", 50), 0, 0],
+      neon_edges: [num("hue", 300), num("thickness", 1.5) * Math.max(1, scale), 0, 0],
+      sketch: [pct("strength", 50), 0, 0, 0],
+      grid: [num("count", 2), 0, 0, 0],
+      triple: [num("axis", 0), 0, 0, 0],
+      old_film: [pct("scratches", 50), pct("flicker", 50), 0, 0],
+      snow: [pct("density", 50), num("speed", 3), 0, 0],
+      sparkle: [pct("density", 50), pct("size", 50), 0, 0],
+      wave: [pct("amount", 40), num("frequency", 4), 0, 0],
+      letterbox: [pct("size", 50), 0, 0, 0],
+      strobe: [num("frequency", 4), 0, 0, 0],
     };
     // Effects with an "amount" parameter scale their strength by it (the catalog default gives 1x).
     const AMOUNT_DEFAULTS: Record<string, number> = { film_grain: 25, sharpen: 40, chromatic_aberration: 20 };

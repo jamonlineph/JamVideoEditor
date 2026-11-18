@@ -201,6 +201,12 @@ export class EngineHost extends EventEmitter {
     return this.library.list(opts);
   }
 
+  /** Cover picture shown on the project's card. */
+  setProjectThumbnail(id: string, file: string) {
+    const row = this.requireProjectRow(id);
+    this.library.updateSummary(id, { updatedAt: row.updatedAt, thumbnailPath: file });
+  }
+
   requireProjectRow(id: string): ProjectRow {
     const row = this.library.get(id);
     if (!row) throw new EditError("PROJECT_NOT_FOUND", `No project "${id}"`, { projectId: id });

@@ -73,9 +73,29 @@ export const projectTools = [
     name: "closeProject",
     title: "Close project",
     category: "project",
-    description: "Save and close the open project, returning to the home screen.",
-    input: z.object({}),
-    handler: (_a, ctx) => ({ ok: true, closedProjectId: ctx.host.closeProject() }),
+    description: "Save and close the open project, returning to the home screen. poster: true first saves a cover frame for the project grid (best effort).",
+    input: z.object({ poster: z.boolean().optional() }),
+    handler: async (a, ctx) => {
+      const id = ctx.host.appState.openProjectId;
+      const project = id ? ctx.host.project : null;
+      let posterPath: string | undefined;
+      if (a.poster && id && project && compositionDuration(project) > 0) {
+        try {
+          const duration = compositionDuration(project);
+          const frame = await Promise.race([
+            ctx.host.render.captureFrame({ timeSeconds: Math.min(0.5, duration / 2), shortSide: 360 }),
+            new Promise<never>((_r, reject) => setTimeout(() => reject(new Error("poster timed out")), 8000)),
+          ]);
+          posterPath = path.join(ctx.host.requireProjectRow(id).dir, "poster.jpg");
+          fs.copyFileSync(frame.path, posterPath);
+        } catch {
+          posterPath = undefined; // a project without a cover still closes
+        }
+      }
+      const closed = ctx.host.closeProject();
+      if (closed && posterPath) ctx.host.setProjectThumbnail(closed, posterPath);
+      return { ok: true, closedProjectId: closed, ...(posterPath ? { posterPath } : {}) };
+    },
   }),
   defineTool({
     name: "renameProject",

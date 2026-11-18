@@ -1,8 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ipcRenderer } from "electron";
 import {
   ADJUST_PRESETS,
   CAPTION_STYLES,
+  CLIP_ANIMATIONS,
+  evaluateClipAnimation,
+  evaluateTextAnimation,
   COLOR_GRADE_KEYS,
   EFFECTS_CATALOG,
   FILTERS_CATALOG,
@@ -26,6 +29,7 @@ import { live, selectedElements, useFeatures, useLive, type Features } from "./l
 import { ui, useUi, capturePointer, seek } from "./uiStore.js";
 import { PreviewTile } from "./PreviewTile.js";
 import type { PreviewKind } from "./thumbs.js";
+import { Icon } from "./Icon.js";
 
 type Args = Record<string, unknown>;
 const run = (tool: string, args: Args) => void live.run(tool, args);
@@ -75,8 +79,8 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
     <div className="field wide">
       <label>{label}</label>
       <div>
-        <button className={value ? "on" : ""} onClick={() => onChange(!value)}>
-          {value ? "On" : "Off"}
+        <button className={`switch${value ? " on" : ""}`} role="switch" aria-checked={value} aria-label={label} onClick={() => onChange(!value)}>
+          <span className="knob" />
         </button>
       </div>
     </div>
@@ -146,9 +150,34 @@ function propAt(el: Element, prop: KeyframeProperty, fallback: number, playhead:
   return evaluateKeyframes(el.keyframes?.[prop], Math.min(Math.max(playhead - el.start, 0), el.duration), fallback);
 }
 
-export function Inspector() {
+/** Property tabs and the tool panels each one stacks (filtered to the selected element's type). */
+export const PROP_TABS: { id: string; label: string; icon: string; panels: string[] }[] = [
+  { id: "text", label: "Text", icon: "text", panels: ["textEdit", "textPreset"] },
+  { id: "captions", label: "Captions", icon: "captions", panels: ["captionsTranscript", "captionStyle"] },
+  { id: "style", label: "Style", icon: "color", panels: ["textFont", "textStyle"] },
+  { id: "basic", label: "Basic", icon: "basic", panels: ["transform", "opacity", "blend", "flip", "crop", "mask", "replace", "keyframeEasing"] },
+  { id: "animation", label: "Animation", icon: "animation", panels: ["clipAnimation", "textAnimation"] },
+  { id: "speed", label: "Speed", icon: "speed", panels: ["speed", "speedCurve", "reverse"] },
+  { id: "audio", label: "Audio", icon: "volume", panels: ["volume", "fade", "ducking", "voiceEnhance", "noiseReduction", "extractAudio", "beats"] },
+  { id: "color", label: "Color", icon: "adjust", panels: ["filters", "adjust", "adjustPresets", "hsl", "curves", "colorWheels", "lut"] },
+  { id: "effects", label: "Effects", icon: "effects", panels: ["effects", "transitions"] },
+  { id: "ai", label: "Smart", icon: "wand", panels: ["autoReframe", "cutout", "subjectEffect", "splitScreen", "textToSpeech"] },
+];
+
+/** Sections that start expanded (the rest open on click, and stay as the user left them). */
+const OPEN = new Set(["textEdit", "captionsTranscript", "textFont", "textStyle", "transform", "opacity", "clipAnimation", "textAnimation", "speed", "speedCurve", "volume", "fade", "filters", "adjust", "effects", "transitions", "autoReframe", "textToSpeech"]);
+
+/** The property tabs that apply to an element. */
+export function tabsFor(el: Element) {
+  const applies = new Set(TOOL_PANELS.filter((p) => p.data.appliesTo.includes(el.type)).map((p) => p.id));
+  return PROP_TABS.map((t) => ({ ...t, panels: t.panels.filter((p) => applies.has(p)) })).filter((t) => t.panels.length);
+}
+
+const TYPE_ICON: Record<string, string> = { video: "media", image: "image", audio: "audio", text: "text", caption: "captions", shape: "shape", sticker: "sticker", adjustment: "adjust" };
+
+export function Inspector({ tab: forced }: { tab?: string } = {}) {
   const s = useLive();
-  const activePanel = useUi("panel");
+  const remembered = useUi("panel");
   const project = s.project!;
   const sel = selectedElements(s);
 
@@ -156,32 +185,64 @@ export function Inspector() {
   if (sel.length > 1) return <MultiPanel project={project} ids={sel.map((e) => e.id)} />;
 
   const el = sel[0];
-  const panels = TOOL_PANELS.filter((p) => p.data.appliesTo.includes(el.type));
-  const panel = panels.find((p) => p.id === activePanel) ?? panels[0];
+  const tabs = tabsFor(el);
+  const tab = tabs.find((t) => t.id === (forced ?? remembered)) ?? tabs[0];
   const onMain = mainTrack(project).elementIds.includes(el.id);
+  const name = el.name ?? (el.type === "text" ? el.text : el.type === "caption" ? el.words.map((w) => w.text).join(" ") : "mediaId" in el ? project.media[el.mediaId]?.name : undefined) ?? el.type;
   return (
-    <div className="inspector">
+    <div className="inspector" data-type={el.type}>
       <div className="head">
-        <div className="kind">
-          {el.type}
-          {onMain ? " · main track" : ""}
+        <span className={`type-badge t-${el.type}`}><Icon name={TYPE_ICON[el.type] ?? "layers"} size={16} /></span>
+        <div className="grow head-text">
+          <div className="kind">
+            {el.type}
+            {onMain ? " · main track" : ""}
+          </div>
+          <div className="name" title={name}>{name}</div>
+          <div className="muted small">
+            {el.start.toFixed(2)}s → {(el.start + el.duration).toFixed(2)}s ({el.duration.toFixed(2)}s)
+          </div>
         </div>
-        <div style={{ fontWeight: 600, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{el.name ?? (el.type === "text" ? el.text : el.id)}</div>
-        <div className="muted small">
-          {el.start.toFixed(2)}s → {(el.start + el.duration).toFixed(2)}s ({el.duration.toFixed(2)}s)
-        </div>
+        <button className="icon ghost" title="Duplicate" aria-label="Duplicate" onClick={() => run("duplicate", { elementId: el.id })}><Icon name="duplicate" size={16} /></button>
+        <button className="icon ghost" title="Delete" aria-label="Delete" onClick={() => run("delete", { elementIds: [el.id] })}><Icon name="trash" size={16} /></button>
       </div>
-      <div className="panel-list">
-        {panels.map((p) => (
-          <button key={p.id} className={p.id === panel.id ? "on" : ""} onClick={() => ui.set({ panel: p.id })}>
-            {p.name}
-          </button>
+      {!forced && (
+        <div className="prop-tabs panel-list" role="tablist">
+          {tabs.map((t) => (
+            <button key={t.id} role="tab" aria-selected={t.id === tab.id} className={t.id === tab.id ? "on" : ""} onClick={() => ui.set({ panel: t.id })}>
+              <Icon name={t.icon} size={17} />
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="pane">
+        {tab.panels.map((id) => (
+          <PanelSection key={id} id={id} single={tab.panels.length === 1}>
+            <SelectedPanel id={id} el={el} project={project} onMain={onMain} />
+          </PanelSection>
         ))}
       </div>
-      <div className="pane">
-        <SelectedPanel id={panel.id} el={el} project={project} onMain={onMain} />
-      </div>
     </div>
+  );
+}
+
+function PanelSection({ id, single, children }: { id: string; single: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(single || OPEN.has(id));
+  const name = TOOL_PANELS.find((p) => p.id === id)?.name ?? id;
+  if (single) return <section className="prop-section" data-panel={id}>{children}</section>;
+  return (
+    <section className={`prop-section${open ? " open" : ""}`} data-panel={id}>
+      <button className="section-head" aria-expanded={open} onClick={() => {
+        setOpen(!open);
+        if (open) OPEN.delete(id);
+        else OPEN.add(id);
+      }}>
+        <span>{name}</span>
+        <Icon name="chevronDown" size={15} />
+      </button>
+      {open && <div className="section-body">{children}</div>}
+    </section>
   );
 }
 
@@ -191,21 +252,34 @@ function SelectedPanel(props: Omit<Parameters<typeof PanelBody>[0], "playhead">)
 }
 
 function ProjectPanel({ project }: { project: Project }) {
+  const quality = useUi("previewQuality");
   const [brief, setBrief] = useState(project.brief);
   useEffect(() => setBrief(project.brief), [project.brief]);
   return (
     <div className="inspector">
       <div className="head">
-        <div className="kind">Project</div>
-        <div style={{ fontWeight: 600, marginTop: 2 }}>{project.name}</div>
-        <div className="muted small">Select a clip to edit it.</div>
+        <span className="type-badge"><Icon name="settings" size={16} /></span>
+        <div className="grow head-text">
+          <div className="kind">Project</div>
+          <div className="name">{project.name}</div>
+          <div className="muted small">Select a clip on the timeline to edit it.</div>
+        </div>
       </div>
       <div className="pane">
         <Title>Canvas</Title>
-        <Select label="Aspect" value={project.canvas.aspectRatio} options={["9:16", "16:9", "1:1", "4:5"]} onChange={(v) => run("setCanvas", { aspectRatio: v })} />
+        <div className="ratio-picker" role="radiogroup" aria-label="Aspect ratio">
+          {[["9:16", "Reels"], ["16:9", "YouTube"], ["1:1", "Square"], ["4:5", "Post"]].map(([a, hint]) => (
+            <button key={a} role="radio" aria-checked={project.canvas.aspectRatio === a} className={project.canvas.aspectRatio === a ? "on" : ""} onClick={() => run("setCanvas", { aspectRatio: a })}>
+              <span className="aspect-glyph" style={{ aspectRatio: a.replace(":", " / ") }} />
+              <b>{a}</b>
+              <span>{hint}</span>
+            </button>
+          ))}
+        </div>
         <Select label="Resolution" value={project.canvas.resolution} options={["720p", "1080p", "4K"]} onChange={(v) => run("setCanvas", { resolution: v })} />
         <Select label="Frame rate" value={String(project.canvas.fps)} options={["24", "25", "30", "50", "60"]} onChange={(v) => run("setCanvas", { fps: Number(v) })} />
         <ColorField label="Background" value={project.canvas.backgroundColor} onChange={(v) => run("setCanvas", { backgroundColor: v })} />
+        <Select label="Preview quality" value={quality} options={[["auto", "Auto"], ["draft", "Draft (faster)"], ["high", "High"]]} onChange={(v) => (v === "auto" || v === "draft" || v === "high") && ui.set({ previewQuality: v })} />
         <Title>Timeline</Title>
         <Toggle label="Magnetic main" value={project.rippleSettings.magnetEnabled} onChange={(v) => run("setRippleTiers", { magnetEnabled: v })} />
         <Toggle label="Snapping" value={project.rippleSettings.snappingEnabled} onChange={(v) => run("setRippleTiers", { snappingEnabled: v })} />
@@ -296,7 +370,7 @@ function MultiPanel({ project, ids }: { project: Project; ids: string[] }) {
       </div>
       <div className="pane">
         <div className="row" style={{ flexWrap: "wrap" }}>
-          <button onClick={() => run("splitAt", { times: [ui.get().playhead], elementIds: ids })}>Split at playhead</button>
+          <button onClick={() => run("splitAt", { times: [ui.get().playhead], elementIds: ids })}><Icon name="split" size={15} /> Split at playhead</button>
           {media.length === 2 && <button onClick={() => run("splitScreen", { elementIds: media })}>Split screen</button>}
           <button onClick={() => run("delete", { elementIds: ids })}>Delete</button>
         </div>
@@ -683,23 +757,24 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     }
     case "textAnimation": {
       if (el.type !== "text") return null;
-      return (
-        <>
-          {(["in", "out", "loop"] as const).map((slot) => (
-            <Select
-              key={slot}
-              label={slot === "in" ? "In" : slot === "out" ? "Out" : "Loop"}
-              value={el.animation[slot]?.id ?? "none"}
-              options={[["none", "None"], ...TEXT_ANIMATIONS.filter((a) => a.data.slot === slot).map((a) => [a.id, a.name] as [string, string])]}
-              onChange={(v) => call("setTextAnimation", { [slot]: { id: v } })}
-            />
-          ))}
-        </>
-      );
+      return <AnimationPicker kind="text" el={el} onSet={(slot, ref) => call("setTextAnimation", { [slot]: ref })} />;
+    }
+    case "clipAnimation": {
+      if (el.type !== "video" && el.type !== "image" && el.type !== "sticker" && el.type !== "shape") return null;
+      return <AnimationPicker kind="clip" el={el} onSet={(slot, ref) => call("setClipAnimation", { [slot]: ref })} />;
     }
     case "textPreset":
       if (el.type !== "text") return null;
-      return <Tiles items={TEXT_PRESETS} active={el.presetId} onPick={(p) => call("applyTextPreset", { presetId: p })} />;
+      return (
+        <div className="tiles text-tiles">
+          {TEXT_PRESETS.map((p) => (
+            <button key={p.id} className={`tile text-tile${el.presetId === p.id ? " active" : ""}`} onClick={() => call("applyTextPreset", { presetId: p.id })} title={p.name}>
+              <PresetSample style={p.data.style} />
+              <span className="label">{p.name}</span>
+            </button>
+          ))}
+        </div>
+      );
     case "textToSpeech":
       if (el.type !== "text") return null;
       return (
@@ -837,7 +912,7 @@ function EffectsPanel({ el, call }: { el: Extract<Element, { effects: unknown }>
             {def?.data.params
               .filter((p) => p.type === "number")
               .map((p) => (
-                <Slider key={p.name} reset={Number(p.default)} label={p.name} value={Number(fx.params[p.name] ?? p.default)} min={p.min ?? 0} max={p.max ?? 100} onCommit={(v) => call("applyEffect", { effectId: fx.effectId, instanceId: fx.instanceId, params: { [p.name]: v } })} />
+                <Slider key={p.name} reset={Number(p.default)} label={p.name.replace(/([A-Z])/g, " $1").toLowerCase().replace(/^./, (c) => c.toUpperCase())} value={Number(fx.params[p.name] ?? p.default)} min={p.min ?? 0} max={p.max ?? 100} onCommit={(v) => call("applyEffect", { effectId: fx.effectId, instanceId: fx.instanceId, params: { [p.name]: v } })} />
               ))}
           </div>
         );
@@ -929,5 +1004,121 @@ function CaptionWords({ el }: { el: Extract<Element, { type: "caption" }> }) {
         Regenerate all captions
       </button>
     </>
+  );
+}
+
+type AnimSlot = "in" | "out" | "loop";
+type AnimRefs = { in?: { id: string; durationSeconds: number }; out?: { id: string; durationSeconds: number }; loop?: { id: string; durationSeconds: number } };
+
+/** In / Out / Combo (or Loop) animation tiles that play their motion on hover, plus the duration. */
+function AnimationPicker({ kind, el, onSet }: { kind: "clip" | "text"; el: Element; onSet: (slot: AnimSlot, ref: { id: string; durationSeconds?: number }) => void }) {
+  const anim = ((el as { animation?: AnimRefs }).animation ?? {}) as AnimRefs;
+  const [slot, setSlot] = useState<AnimSlot>(anim.in ? "in" : anim.out ? "out" : anim.loop ? "loop" : "in");
+  const catalog = kind === "clip" ? CLIP_ANIMATIONS : TEXT_ANIMATIONS;
+  const items = catalog.filter((a) => a.data.slot === slot);
+  const current = anim[slot];
+  const maxDuration = slot === "loop" ? 4 : Math.max(0.2, Math.min(5, el.duration));
+  return (
+    <>
+      <div className="segmented anim-slots" role="tablist">
+        {(["in", "out", "loop"] as const).map((k) => (
+          <button key={k} role="tab" aria-selected={slot === k} className={slot === k ? "on" : ""} onClick={() => setSlot(k)}>
+            {k === "in" ? "In" : k === "out" ? "Out" : kind === "clip" ? "Combo" : "Loop"}
+            {anim[k] && <i className="dot" />}
+          </button>
+        ))}
+      </div>
+      <div className="tiles anim-tiles">
+        <button className={`tile anim-tile${!current ? " active" : ""}`} onClick={() => onSet(slot, { id: "none" })} title="No animation">
+          <div className="anim-stage"><Icon name="close" size={20} /></div>
+          <span className="label">None</span>
+        </button>
+        {items.map((a) => (
+          <AnimTile key={a.id} kind={kind} slot={slot} id={a.id} name={a.name} active={current?.id === a.id} onPick={() => onSet(slot, { id: a.id, ...(current ? { durationSeconds: current.durationSeconds } : {}) })} />
+        ))}
+      </div>
+      {current && (
+        <Slider
+          label={slot === "loop" ? (kind === "clip" && current.id && ["ken_burns", "slow_zoom_out", "pan_left", "pan_right"].includes(current.id) ? "Speed (whole clip)" : "Cycle") : "Duration"}
+          value={Math.min(current.durationSeconds, maxDuration)}
+          min={0.1}
+          max={maxDuration}
+          step={0.05}
+          format={(v) => `${v.toFixed(1)}s`}
+          reset={slot === "loop" ? (kind === "clip" ? 2 : 1) : kind === "clip" ? 0.6 : 0.4}
+          onCommit={(v) => onSet(slot, { id: current.id, durationSeconds: v })}
+        />
+      )}
+    </>
+  );
+}
+
+/** A tile whose little card moves the way the animation moves (looping while hovered). */
+function AnimTile({ kind, slot, id, name, active, onPick }: { kind: "clip" | "text"; slot: AnimSlot; id: string; name: string; active: boolean; onPick: () => void }) {
+  const card = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState(false);
+  useEffect(() => {
+    const pose = (t: number) => {
+      const node = card.current;
+      if (!node) return;
+      const total = 1.6;
+      const local = slot === "out" ? 0.8 + (t % total) : t % total;
+      const ref = { id, durationSeconds: slot === "loop" ? 0.8 : 0.8 };
+      const anim = { [slot]: ref } as AnimRefs;
+      const m =
+        kind === "clip"
+          ? evaluateClipAnimation(anim, local, slot === "loop" ? total : 1.6)
+          : (() => {
+              const a = evaluateTextAnimation({ animation: anim, duration: 1.6 } as never, local);
+              return { ...a, dx: a.dx * 3, dy: a.dy * 3 };
+            })();
+      node.style.transform = `translate(${m.dx * 60}%, ${m.dy * 60}%) scale(${m.scale}) rotate(${m.rotation}deg)`;
+      node.style.opacity = String(Math.max(0, Math.min(1, m.opacity)));
+      node.style.filter = "blur" in m && m.blur > 0.01 ? `blur(${m.blur * 4}px)` : "";
+    };
+    if (!hover) {
+      pose(slot === "in" ? 0.25 : slot === "out" ? 0.55 : 0.3);
+      return;
+    }
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      pose((now - start) / 1000);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [hover, kind, slot, id]);
+  return (
+    <button className={`tile anim-tile${active ? " active" : ""}`} data-anim={id} onClick={onPick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} onFocus={() => setHover(true)} onBlur={() => setHover(false)} title={name}>
+      <div className="anim-stage">
+        <div ref={card} className={`anim-card k-${kind}`}>{kind === "text" ? "Aa" : ""}</div>
+      </div>
+      <span className="label">{name}</span>
+    </button>
+  );
+}
+
+function PresetSample({ style }: { style: (typeof TEXT_PRESETS)[number]["data"]["style"] }) {
+  return (
+    <span
+      className="text-sample"
+      style={{
+        fontFamily: fontStack(style.fontFamily),
+        fontWeight: style.fontWeight,
+        fontStyle: style.italic ? "italic" : undefined,
+        color: style.color && style.color.length === 9 && style.color.endsWith("00") ? "transparent" : style.color ?? "#fff",
+        background: style.backgroundColor,
+        padding: style.backgroundColor ? "2px 8px" : undefined,
+        borderRadius: style.backgroundCornerRadius ? `${Math.round(style.backgroundCornerRadius * 14)}px` : 3,
+        textTransform: style.uppercase ? "uppercase" : undefined,
+        WebkitTextStroke: style.strokeColor && style.strokeWidth ? `${Math.max(1, Math.min(3, style.strokeWidth * 14))}px ${style.strokeColor}` : undefined,
+        paintOrder: "stroke fill",
+        textShadow: style.shadowColor ? `${(style.shadowOffsetX ?? 0) * 20}px ${(style.shadowOffsetY ?? 0) * 20}px ${(style.shadowBlur ?? 0) * 18}px ${style.shadowColor}` : undefined,
+        fontSize: 16,
+      }}
+    >
+      Text
+    </span>
   );
 }

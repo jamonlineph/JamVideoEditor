@@ -1,20 +1,23 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { compositionDuration, isAudioKind, mainTrack, type Element, type Project, type Track } from "@openedits/core";
-import { additiveClick, live, useLive } from "./live.js";
-import { droppedPaths } from "./Dock.js";
+import { compositionDuration, isAudioKind, mainTrack, type Element, type MediaAsset, type Project, type Track } from "@openedits/core";
+import { additiveClick, live, selectedElements, useLive } from "./live.js";
+import { droppedPaths, importFiles, StickerArt } from "./Dock.js";
 import { formatTime, ui, useUi, capturePointer, seek } from "./uiStore.js";
+import { Icon } from "./Icon.js";
+import { mediaFrame } from "./frames.js";
 
-const LANE_H: Record<string, number> = { main: 64, audio: 40, default: 34 };
-const COLORS: Record<string, string> = {
-  video: "var(--video)",
-  image: "var(--image)",
-  audio: "var(--audio)",
-  text: "var(--text-el)",
-  caption: "var(--caption)",
-  shape: "var(--shape)",
-  sticker: "var(--sticker)",
-  adjustment: "var(--adjust)",
-};
+const LANE_H: Record<string, number> = { main: 60, audio: 40, default: 34 };
+const TRACK_ICON: Record<string, string> = { main: "media", overlay: "layers", adjustment: "adjust", shape: "shape", text: "text", sticker: "sticker", caption: "captions", music: "audio", sfx: "audio", voiceover: "mic", audio: "audio" };
+const CLIP_ICON: Record<string, string> = { video: "media", image: "image", audio: "audio", text: "text", caption: "captions", shape: "shape", sticker: "sticker", adjustment: "effects" };
+
+/** Ask the editor to show a library tab (the side panel, or the bottom sheet on small screens). */
+export function openDock(tab: string) {
+  window.dispatchEvent(new CustomEvent("openedits-dock", { detail: tab }));
+}
+/** Ask the editor to show a properties tab for the selection. */
+export function openProps(tab: string) {
+  window.dispatchEvent(new CustomEvent("openedits-props", { detail: tab }));
+}
 const SNAP_PX = 8;
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 800;
@@ -248,8 +251,18 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     void live.run("addMedia", { mediaId, start: t, asOverlay: true });
   };
 
+  const main = mainTrack(project);
+  const mainEnd = main.elementIds.length ? Math.max(...main.elementIds.map((id) => project.elements[id].start + project.elements[id].duration)) : 0;
+  /** Pick files, import them and put them at the end of the main track. */
+  const addToEnd = async () => {
+    const before = new Set(Object.keys(live.state.project?.media ?? {}));
+    await importFiles();
+    const fresh = Object.values(live.state.project?.media ?? {}).filter((m) => !before.has(m.id));
+    for (const m of fresh) await live.run("addMedia", m.kind === "audio" ? { mediaId: m.id, start: ui.get().playhead, role: "music" } : { mediaId: m.id });
+  };
+
   const step = rulerStep(pps);
-  const width = Math.max(duration, 10) * pps + 100;
+  const width = Math.max(duration, 10) * pps + 160;
   const inRange = (start: number, end = start) => end * pps >= range.left && start * pps <= range.right;
   const ticks: number[] = [];
   const right = Math.min(Math.max(width, range.right - OVERSCAN), range.right);
@@ -257,80 +270,44 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
 
   return (
     <section className="timeline" aria-label="Timeline">
-      <div className="bar">
-        <div className="timeline-edit">
-          <strong>Timeline</strong>
-          <button title="Split at playhead" disabled={!duration} onClick={() => void live.run("splitAt", { times: [ui.get().playhead], elementIds: selection.size ? [...selection] : mainTrack(project).elementIds })}>
-            ✂︎ Split
-          </button>
-          <button title="Delete selection" disabled={!selection.size} onClick={() => void live.run("delete", { elementIds: [...selection] })}>
-            Delete
-          </button>
-          <span className="sep" />
-          <button className={rs.magnetEnabled ? "on" : ""} aria-pressed={rs.magnetEnabled} title="Magnetic main track (no gaps)" onClick={() => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled })}>
-            Magnet
-          </button>
-          <button className={rs.snappingEnabled ? "on" : ""} aria-pressed={rs.snappingEnabled} title="Snap to edges, playhead and beats" onClick={() => void live.run("setRippleTiers", { snappingEnabled: !rs.snappingEnabled })}>
-            Snap
-          </button>
-          <button className={rs.tier1RippleEnabled ? "on ripple" : "ripple"} aria-pressed={rs.tier1RippleEnabled} title="Overlays follow the main clip they sit on" onClick={() => void live.run("setRippleTiers", { tier1RippleEnabled: !rs.tier1RippleEnabled })}>
-            Ripple linked
-          </button>
-          <button className={rs.tier2RippleEnabled ? "on ripple" : "ripple"} aria-pressed={rs.tier2RippleEnabled} title="Everything after an edit shifts with it" onClick={() => void live.run("setRippleTiers", { tier2RippleEnabled: !rs.tier2RippleEnabled })}>
-            Ripple all
-          </button>
-        </div>
-        <div className="timeline-zoom">
-          <button className="icon ghost" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(pps / 1.5)}>
-            −
-          </button>
-          <input type="range" aria-label="Timeline zoom" min={Math.log(MIN_ZOOM)} max={Math.log(MAX_ZOOM)} step={0.01} value={Math.log(pps)} onChange={(e) => zoom(Math.exp(Number(e.target.value)))} />
-          <button className="icon ghost" aria-label="Zoom in" title="Zoom in" onClick={() => zoom(pps * 1.5)}>
-            ＋
-          </button>
-          <button
-            className="ghost"
-            title="Fit the whole timeline"
-            onClick={() => {
-              const w = scroller.current?.clientWidth ?? 800;
-              ui.set({ pxPerSecond: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (w - 32) / Math.max(1, duration))) });
-              if (scroller.current) scroller.current.scrollLeft = 0;
-            }}
-          >
-            Fit
-          </button>
-        </div>
-      </div>
+      <TimelineBar duration={duration} selection={selection} project={project} zoom={zoom} fit={() => {
+        const w = scroller.current?.clientWidth ?? 800;
+        ui.set({ pxPerSecond: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (w - 80) / Math.max(1, duration))) });
+        if (scroller.current) scroller.current.scrollLeft = 0;
+      }} pps={pps} />
       <div className="body">
         <div className="track-heads">
-          <div className="track-head-caption">Tracks</div>
+          <div className="track-head-caption" />
           <div className="track-head-scroll">
             <div ref={trackHeads}>
               {lanes.map((t) => (
-                <div key={t.id} className="track-head" style={{ height: laneHeight(t) }}>
-                  <span className="grow" title={t.name}>
-                    {t.kind === "main" ? "Main" : t.name}
+                <div key={t.id} className={`track-head${t.kind === "main" ? " main" : ""}`} style={{ height: laneHeight(t) }}>
+                  <span className="track-name" title={t.kind === "main" ? "Main track" : t.name}>
+                    <Icon name={TRACK_ICON[t.kind] ?? "layers"} size={14} />
+                    <span>{t.kind === "main" ? "Main" : t.name}</span>
                   </span>
-                  <button title={t.locked ? "Unlock" : "Lock"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, locked: !t.locked })} style={{ opacity: t.locked ? 1 : 0.45 }}>
-                    {t.locked ? "🔒" : "🔓"}
-                  </button>
-                  {isAudioKind(t.kind) || t.kind === "main" ? (
-                    <button title={t.muted ? "Unmute" : "Mute"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, muted: !t.muted })} style={{ opacity: t.muted ? 1 : 0.45 }}>
-                      {t.muted ? "🔇" : "🔊"}
+                  <span className="track-flags">
+                    <button className={t.locked ? "on" : ""} aria-pressed={t.locked} title={t.locked ? "Unlock track" : "Lock track"} aria-label={t.locked ? "Unlock track" : "Lock track"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, locked: !t.locked })}>
+                      <Icon name={t.locked ? "lock" : "unlock"} size={13} />
                     </button>
-                  ) : null}
-                  {!isAudioKind(t.kind) && (
-                    <button title={t.hidden ? "Show" : "Hide"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, hidden: !t.hidden })} style={{ opacity: t.hidden ? 1 : 0.45 }}>
-                      {t.hidden ? "◌" : "◉"}
-                    </button>
-                  )}
+                    {isAudioKind(t.kind) || t.kind === "main" ? (
+                      <button className={t.muted ? "on" : ""} aria-pressed={t.muted} title={t.muted ? "Unmute track" : "Mute track"} aria-label={t.muted ? "Unmute track" : "Mute track"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, muted: !t.muted })}>
+                        <Icon name={t.muted ? "mute" : "volume"} size={13} />
+                      </button>
+                    ) : null}
+                    {!isAudioKind(t.kind) && (
+                      <button className={t.hidden ? "on" : ""} aria-pressed={t.hidden} title={t.hidden ? "Show track" : "Hide track"} aria-label={t.hidden ? "Show track" : "Hide track"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, hidden: !t.hidden })}>
+                        <Icon name={t.hidden ? "eyeOff" : "eye"} size={13} />
+                      </button>
+                    )}
+                  </span>
                 </div>
               ))}
             </div>
           </div>
         </div>
         <div className="lanes" ref={scroller} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => setDrag(null)}>
-          <div className="lanes-inner" style={{ width }}>
+          <div className="lanes-inner" style={{ width, minWidth: "100%" }}>
             <div
               className="ruler"
               onPointerDown={(e) => {
@@ -383,13 +360,38 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                   }} />;
                 })}
                 {t.kind === "main" &&
-                  project.transitions.map((tr) => {
-                    const from = project.elements[tr.fromElementId];
+                  t.elementIds.slice(0, -1).map((id) => {
+                    const from = project.elements[id];
                     if (!from) return null;
                     const cut = from.start + from.duration;
-                    if (!inRange(cut - tr.durationSeconds / 2, cut + tr.durationSeconds / 2)) return null;
-                    return <div key={tr.id} className="tr" title={`${tr.type} ${tr.durationSeconds.toFixed(2)}s`} style={{ position: "absolute", top: 3, bottom: 3, left: (cut - tr.durationSeconds / 2) * pps, width: tr.durationSeconds * pps, zIndex: 3 }} />;
+                    const tr = project.transitions.find((x) => x.fromElementId === id);
+                    if (!inRange(cut - 1, cut + 1)) return null;
+                    return (
+                      <div key={`tr-${id}`}>
+                        {tr && <div className="tr" style={{ left: (cut - tr.durationSeconds / 2) * pps, width: tr.durationSeconds * pps }} />}
+                        <button
+                          className={`tr-btn${tr ? " on" : ""}`}
+                          data-from={id}
+                          style={{ left: cut * pps }}
+                          title={tr ? `Transition: ${tr.type.replace(/_/g, " ")} (${tr.durationSeconds.toFixed(2)}s). Click to change.` : "Add a transition"}
+                          aria-label={tr ? `Change transition after ${from.name ?? "clip"}` : `Add a transition after ${from.name ?? "clip"}`}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void live.call("setSelection", { elementIds: [id] }).catch(() => {});
+                            openDock("transitions");
+                          }}
+                        >
+                          <Icon name={tr ? "transitions" : "plus"} size={11} />
+                        </button>
+                      </div>
+                    );
                   })}
+                {t.kind === "main" && (
+                  <button className="add-clip" style={{ left: mainEnd * pps + 8 }} title="Import and add media" aria-label="Add media to the end of the main track" onPointerDown={(e) => e.stopPropagation()} onClick={() => void addToEnd()}>
+                    <Icon name="plus" size={18} />
+                  </button>
+                )}
               </div>
             ))}
             {dropX !== null && <div className="drop-line" style={{ left: dropX }} />}
@@ -431,27 +433,113 @@ function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element
       width -= drag.dx;
     } else width += drag.dx;
   }
-  const label = el.name ?? (el.type === "text" ? el.text : el.type === "caption" ? el.words.map((w) => w.text).join(" ") : "mediaId" in el ? project.media[el.mediaId]?.name : el.type);
+  const label = el.name ?? (el.type === "text" ? el.text : el.type === "caption" ? el.words.map((w) => w.text).join(" ") : "mediaId" in el ? project.media[el.mediaId]?.name : el.type === "adjustment" ? "Adjustment" : el.type);
   const kfOffsets = [...new Set(Object.values(el.keyframes ?? {}).flatMap((k) => (k ?? []).map((x) => x.offsetSeconds)))];
-  const speed = (el.type === "video" || el.type === "audio") && (el.speed.mode === "curve" || el.speed.rate !== 1) ? (el.speed.mode === "curve" ? " · ramp" : ` · ${el.speed.rate}×`) : "";
+  const speed = (el.type === "video" || el.type === "audio") && (el.speed.mode === "curve" || el.speed.rate !== 1) ? (el.speed.mode === "curve" ? "ramp" : `${el.speed.rate}×`) : "";
+  const media = "mediaId" in el ? project.media[el.mediaId] : undefined;
+  const anim = (el as { animation?: { in?: unknown; out?: unknown; loop?: unknown } }).animation;
+  const fx = "effects" in el ? el.effects.length : 0;
+  const lane = project.tracks.find((t) => t.id === el.trackId);
+  const h = lane ? laneHeight(lane) : 34;
   return (
     <div
-      className={`clip${selected ? " selected" : ""}`}
+      className={`clip t-${el.type}${selected ? " selected" : ""}`}
       data-id={el.id}
-      style={{ left, width: Math.max(2, width), background: COLORS[el.type], opacity: drag?.kind === "move" && drag.moved ? 0.8 : 1 }}
+      style={{ left, width: Math.max(2, width), opacity: drag?.kind === "move" && drag.moved ? 0.8 : 1 }}
       onPointerDown={(e) => onPointerDown(e, "body")}
       onDoubleClick={() => seek(el.start)}
     >
+      {(el.type === "video" || el.type === "image") && media && width > 8 && <Filmstrip el={el} media={media} width={Math.max(2, width)} height={h} />}
       {(el.type === "video" || el.type === "audio") && <Waveform el={el} project={project} pps={pps} />}
       <div className="name">
-        {label}
-        {speed}
+        {el.type === "sticker" && el.stickerId ? <StickerArt id={el.stickerId} size={13} /> : <Icon name={CLIP_ICON[el.type] ?? "layers"} size={12} />}
+        <span className="label-text">{label}</span>
+        {speed && <span className="chip-mini">{speed}</span>}
+        {anim && Boolean(anim.in || anim.out || anim.loop) && <span className="chip-mini" title="Animated"><Icon name="animation" size={10} /></span>}
+        {fx > 0 && <span className="chip-mini" title={`${fx} effect${fx > 1 ? "s" : ""}`}><Icon name="effects" size={10} /></span>}
       </div>
+      {selected && width > 60 && <div className="dur">{el.duration.toFixed(1)}s</div>}
       {kfOffsets.map((o) => (
         <div key={o} className="kf" style={{ left: o * pps }} />
       ))}
       <div className="trim l" onPointerDown={(e) => onPointerDown(e, "l")} />
       <div className="trim r" onPointerDown={(e) => onPointerDown(e, "r")} />
+    </div>
+  );
+}
+
+/** Frames along a video or photo clip, like a strip of film. */
+function Filmstrip({ el, media, width, height }: { el: Extract<Element, { type: "video" | "image" }>; media: MediaAsset; width: number; height: number }) {
+  const aspect = media.width && media.height ? media.width / media.height : 16 / 9;
+  const tileW = Math.max(height * 0.56, Math.min(height * 1.78, height * aspect));
+  const count = Math.max(1, Math.min(48, Math.ceil(width / tileW)));
+  const times = Array.from({ length: count }, (_, i) => {
+    if (el.type !== "video") return 0;
+    const frac = Math.min(1, ((i + 0.5) * tileW) / width);
+    return el.sourceInSourceSeconds + (el.reversed ? 1 - frac : frac) * el.sourceDurationSourceSeconds;
+  });
+  return (
+    <div className="filmstrip" aria-hidden="true">
+      {times.map((t, i) => (
+        <FilmFrame key={i} media={media} seconds={t} style={{ left: i * tileW, width: tileW }} />
+      ))}
+    </div>
+  );
+}
+
+function FilmFrame({ media, seconds, style }: { media: MediaAsset; seconds: number; style: React.CSSProperties }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void mediaFrame(media, seconds, 72).then((u) => alive && setUrl(u));
+    return () => {
+      alive = false;
+    };
+  }, [media.id, Math.round(seconds * 2)]);
+  return <div className="frame" style={{ ...style, backgroundImage: url ? `url(${url})` : undefined }} />;
+}
+
+/** Edit actions over the timeline (CapCut-style), then the timeline switches and zoom. */
+function TimelineBar({ duration, selection, project, zoom, fit, pps }: { duration: number; selection: Set<string>; project: Project; zoom: (next: number, anchor?: number) => void; fit: () => void; pps: number }) {
+  const s = useLive();
+  const rs = project.rippleSettings;
+  const sel = selectedElements(s);
+  const one = sel.length === 1 ? sel[0] : undefined;
+  const timed = one && (one.type === "video" || one.type === "audio") ? one : undefined;
+  const flippable = one && (one.type === "video" || one.type === "image") ? one : undefined;
+  const visual = one && "transform" in one ? one : undefined;
+  const tool = (icon: string, label: string, onClick: () => void, opts: { disabled?: boolean; on?: boolean; title?: string } = {}) => (
+    <button className={`tool${opts.on ? " on" : ""}`} aria-label={label} aria-pressed={opts.on} title={opts.title ?? label} disabled={opts.disabled} onClick={onClick}>
+      <Icon name={icon} size={17} />
+    </button>
+  );
+  return (
+    <div className="bar">
+      <div className="timeline-edit">
+        {tool("undo", "Undo", () => void live.run("undo"), { title: "Undo (Ctrl/Cmd+Z)" })}
+        {tool("redo", "Redo", () => void live.run("redo"), { title: "Redo" })}
+        <span className="sep" />
+        {tool("split", "Split", () => void live.run("splitAt", { times: [ui.get().playhead], elementIds: selection.size ? [...selection] : mainTrack(project).elementIds }), { disabled: !duration, title: "Split at the playhead (S)" })}
+        {tool("trash", "Delete", () => void live.run("delete", { elementIds: [...selection] }), { disabled: !selection.size, title: "Delete (Backspace)" })}
+        {tool("duplicate", "Duplicate", () => one && void live.run("duplicate", { elementId: one.id }), { disabled: !one })}
+        {tool("reverse", "Reverse", () => timed && void live.run("setReversed", { elementId: timed.id, reversed: !timed.reversed }), { disabled: !timed, on: !!timed?.reversed, title: "Play backwards" })}
+        {tool("mirror", "Mirror", () => flippable && void live.run("setFlip", { elementId: flippable.id, horizontal: !flippable.flip.horizontal }), { disabled: !flippable, on: !!flippable?.flip.horizontal })}
+        {tool("rotate", "Rotate", () => visual && void live.run("setTransform", { elementId: visual.id, rotationDegrees: (Math.round(visual.transform.rotationDegrees / 90) * 90 + 90) % 360 }), { disabled: !visual, title: "Rotate 90°" })}
+        {tool("crop", "Crop", () => openProps("basic"), { disabled: !flippable, title: "Crop and position" })}
+        {tool("speed", "Speed", () => openProps("speed"), { disabled: !timed })}
+        {tool("animation", "Animation", () => openProps("animation"), { disabled: !one || !["video", "image", "sticker", "shape", "text"].includes(one.type) })}
+      </div>
+      <div className="timeline-zoom">
+        {tool("magnet", "Magnetic main track", () => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled }), { on: rs.magnetEnabled, title: "Magnetic main track (no gaps)" })}
+        {tool("snap", "Snapping", () => void live.run("setRippleTiers", { snappingEnabled: !rs.snappingEnabled }), { on: rs.snappingEnabled, title: "Snap to edges, playhead and beats" })}
+        {tool("link", "Ripple linked", () => void live.run("setRippleTiers", { tier1RippleEnabled: !rs.tier1RippleEnabled }), { on: rs.tier1RippleEnabled, title: "Overlays follow the main clip they sit on" })}
+        {tool("ripple", "Ripple all", () => void live.run("setRippleTiers", { tier2RippleEnabled: !rs.tier2RippleEnabled }), { on: rs.tier2RippleEnabled, title: "Everything after an edit shifts with it" })}
+        <span className="sep" />
+        {tool("zoomOut", "Zoom out", () => zoom(pps / 1.5))}
+        <input type="range" aria-label="Timeline zoom" min={Math.log(MIN_ZOOM)} max={Math.log(MAX_ZOOM)} step={0.01} value={Math.log(pps)} onChange={(e) => zoom(Math.exp(Number(e.target.value)))} />
+        {tool("zoomIn", "Zoom in", () => zoom(pps * 1.5))}
+        {tool("fit", "Fit", fit, { title: "Fit the whole timeline" })}
+      </div>
     </div>
   );
 }

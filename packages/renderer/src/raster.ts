@@ -277,8 +277,15 @@ export function rasterSticker(layer: StickerLayer): Raster {
   const canvas = new OffscreenCanvas(size, size);
   const ctx = canvas.getContext("2d")!;
   ctx.scale(size / 24, size / 24);
-  ctx.fillStyle = layer.fillColor;
-  ctx.fill(new Path2D(layer.svgPath));
+  if (layer.parts?.length) {
+    for (const part of layer.parts) {
+      ctx.fillStyle = part.fill;
+      ctx.fill(new Path2D(part.d));
+    }
+  } else {
+    ctx.fillStyle = layer.fillColor;
+    ctx.fill(new Path2D(layer.svgPath));
+  }
   return { canvas, width: size, height: size };
 }
 

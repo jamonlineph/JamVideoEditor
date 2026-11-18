@@ -6,15 +6,24 @@ export interface UiState {
   playing: boolean;
   loop: boolean;
   pxPerSecond: number;
-  dockTab: "media" | "audio" | "text" | "effects";
+  dockTab: DockTab;
+  /** Remembered properties tab (Basic, Animation, Speed, ...). */
   panel: string | null;
+  /** Compact layout: the bottom sheet that is open, if any. */
+  sheet: Sheet | null;
+  /** Transition picker open on the cut after this main-track clip. */
+  transitionCut: string | null;
   showGuides: boolean;
   previewQuality: "auto" | "draft" | "high";
   recorder: boolean;
   exportOpen: boolean;
 }
 
-let state: UiState = { playhead: 0, playing: false, loop: false, pxPerSecond: 60, dockTab: "media", panel: null, showGuides: false, previewQuality: "auto", recorder: false, exportOpen: false };
+export const DOCK_TABS = ["media", "audio", "text", "stickers", "effects", "transitions", "filters", "adjust", "captions"] as const;
+export type DockTab = (typeof DOCK_TABS)[number];
+export type Sheet = { kind: "dock"; tab: DockTab } | { kind: "inspector"; tab?: string };
+
+let state: UiState = { playhead: 0, playing: false, loop: false, pxPerSecond: 60, dockTab: "media", panel: null, sheet: null, transitionCut: null, showGuides: false, previewQuality: "auto", recorder: false, exportOpen: false };
 const listeners = new Set<() => void>();
 
 export const ui = {

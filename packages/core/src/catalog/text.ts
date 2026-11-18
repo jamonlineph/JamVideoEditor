@@ -5,7 +5,7 @@ type S = Partial<TextStyle>;
 const W = "#FFFFFF";
 const K = "#000000";
 
-/** [id, name, category, style] — 34 original text presets. */
+/** [id, name, category, style] — original text presets. */
 const PRESETS: [string, string, string, S][] = [
   ["classic", "Classic", "basic", { fontFamily: "Helvetica Neue", fontWeight: 700, color: W }],
   ["classic_outline", "Classic Outline", "basic", { fontFamily: "Helvetica Neue", fontWeight: 800, color: W, strokeColor: K, strokeWidth: 0.12 }],
@@ -41,6 +41,22 @@ const PRESETS: [string, string, string, S][] = [
   ["mint_box", "Mint Box", "label", { fontFamily: "Avenir Next", fontWeight: 700, color: "#0E3B2E", backgroundColor: "#B8F5D9FF", backgroundPadding: 0.3, backgroundCornerRadius: 0.4 }],
   ["outline_only", "Outline Only", "basic", { fontFamily: "Helvetica Neue", fontWeight: 900, color: "#FFFFFF00", strokeColor: W, strokeWidth: 0.08, uppercase: true }],
   ["wide_spaced", "Wide Spaced", "elegant", { fontFamily: "Futura", fontWeight: 500, color: W, letterSpacing: 0.35, uppercase: true, fontSizeNorm: 0.045 }],
+  ["highlighter", "Highlighter", "trending", { fontFamily: "Avenir Next", fontWeight: 800, color: K, backgroundColor: "#FFE14DFF", backgroundPadding: 0.25, backgroundCornerRadius: 0.1 }],
+  ["bold_pop", "Bold Pop", "trending", { fontFamily: "Helvetica Neue", fontWeight: 900, fontSizeNorm: 0.085, color: W, strokeColor: "#FF3B5C", strokeWidth: 0.16, uppercase: true }],
+  ["chat_bubble", "Chat Bubble", "trending", { fontFamily: "SF Pro Display", fontWeight: 600, color: W, backgroundColor: "#2F80FFFF", backgroundPadding: 0.45, backgroundCornerRadius: 0.8 }],
+  ["reply_bubble", "Reply Bubble", "trending", { fontFamily: "SF Pro Display", fontWeight: 600, color: K, backgroundColor: "#E9E9EBFF", backgroundPadding: 0.45, backgroundCornerRadius: 0.8 }],
+  ["glow_white", "White Glow", "neon", { fontFamily: "Avenir Next", fontWeight: 800, color: W, shadowColor: "#FFFFFFFF", shadowBlur: 0.5 }],
+  ["fire", "Fire", "neon", { fontFamily: "Impact", fontWeight: 400, fontSizeNorm: 0.09, color: "#FFE9A8", shadowColor: "#FF5A1FFF", shadowBlur: 0.55, uppercase: true }],
+  ["ice", "Ice", "neon", { fontFamily: "Futura", fontWeight: 800, color: "#E8FBFF", shadowColor: "#5AD8FFFF", shadowBlur: 0.45, uppercase: true }],
+  ["gold", "Gold", "elegant", { fontFamily: "Didot", fontWeight: 700, fontSizeNorm: 0.08, color: "#F4D27A", shadowColor: "#7A4B00CC", shadowOffsetY: 0.05, letterSpacing: 0.06, uppercase: true }],
+  ["shadow_box", "Shadow Box", "label", { fontFamily: "Futura", fontWeight: 800, color: K, backgroundColor: "#FFFFFFFF", backgroundPadding: 0.3, shadowColor: "#FF3B5CFF", shadowOffsetX: 0.08, shadowOffsetY: 0.08, uppercase: true }],
+  ["ticket", "Ticket", "label", { fontFamily: "Courier New", fontWeight: 700, color: "#FFF3D6", backgroundColor: "#D7263DFF", backgroundPadding: 0.35, backgroundCornerRadius: 0.1, uppercase: true, letterSpacing: 0.1 }],
+  ["chunky", "Chunky", "fun", { fontFamily: "Avenir Next", fontWeight: 900, fontSizeNorm: 0.1, color: "#FF6FB5", strokeColor: W, strokeWidth: 0.2, shadowColor: "#00000088", shadowOffsetY: 0.08 }],
+  ["sky", "Sky", "color", { fontFamily: "Avenir Next", fontWeight: 900, color: "#7FD8FF", strokeColor: "#0B2A4A", strokeWidth: 0.1, uppercase: true }],
+  ["lime", "Lime", "color", { fontFamily: "Helvetica Neue", fontWeight: 900, color: "#C6FF3D", shadowColor: "#000000CC", shadowOffsetY: 0.06, uppercase: true }],
+  ["lavender", "Lavender", "color", { fontFamily: "Georgia", fontWeight: 700, italic: true, color: "#D9C2FF", shadowColor: "#4B2A86CC", shadowBlur: 0.3 }],
+  ["subtitle_yellow", "Subtitle Yellow", "info", { fontFamily: "Helvetica Neue", fontWeight: 700, fontSizeNorm: 0.045, color: "#FFE14D", strokeColor: K, strokeWidth: 0.1 }],
+  ["breaking", "Breaking", "info", { fontFamily: "Helvetica Neue", fontWeight: 900, fontSizeNorm: 0.05, color: W, backgroundColor: "#E50914FF", backgroundPadding: 0.35, uppercase: true, align: "left" }],
 ];
 
 export const TEXT_PRESETS: CatalogItem<{ style: S }>[] = PRESETS.map(([id, name, category, style]) => ({
@@ -121,18 +137,31 @@ const ANIMS: [string, string, "in" | "out" | "loop"][] = [
   ["typewriter", "Typewriter", "in"],
   ["blur_in", "Blur In", "in"],
   ["word_by_word", "Word by Word", "in"],
+  ["bounce_in", "Bounce In", "in"],
+  ["spin_in", "Spin In", "in"],
+  ["swing_in", "Swing In", "in"],
+  ["drop_in", "Drop In", "in"],
   ["fade_out", "Fade Out", "out"],
   ["slide_out_up", "Slide Out Up", "out"],
   ["slide_out_down", "Slide Out Down", "out"],
   ["zoom_out", "Zoom Out", "out"],
   ["pop_out", "Pop Out", "out"],
   ["blur_out", "Blur Out", "out"],
+  ["slide_out_left", "Slide Out Left", "out"],
+  ["slide_out_right", "Slide Out Right", "out"],
+  ["spin_out", "Spin Out", "out"],
+  ["erase", "Erase", "out"],
   ["pulse", "Pulse", "loop"],
   ["wiggle", "Wiggle", "loop"],
   ["float", "Float", "loop"],
   ["flicker", "Flicker", "loop"],
   ["shake", "Shake", "loop"],
   ["glow_pulse", "Glow Pulse", "loop"],
+  ["bounce", "Bounce", "loop"],
+  ["heartbeat", "Heartbeat", "loop"],
+  ["swing", "Swing", "loop"],
+  ["spin", "Spin", "loop"],
+  ["blink", "Blink", "loop"],
 ];
 
 export const TEXT_ANIMATIONS: CatalogItem<{ slot: "in" | "out" | "loop"; defaultDurationSeconds: number }>[] = ANIMS.map(([id, name, slot]) => ({

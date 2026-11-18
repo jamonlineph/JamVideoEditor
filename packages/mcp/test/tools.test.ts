@@ -193,6 +193,11 @@ describe("MCP tool surface", () => {
     await call("clearCrop", { elementId: dup });
     await call("setFlip", { elementId: dup, horizontal: true });
     await call("setOpacity", { elementId: dup, opacity: 0.8 });
+    await call("setClipAnimation", { elementId: dup, in: { id: "zoom_in" }, loop: { id: "ken_burns" } });
+    expect(host.project.elements[dup]).toMatchObject({ animation: { in: { id: "zoom_in", durationSeconds: 0.6 }, loop: { id: "ken_burns" } } });
+    expect(JSON.stringify(await callError("setClipAnimation", { elementId: dup, in: { id: "fade_out" } }))).toContain("not in");
+    await call("setClipAnimation", { elementId: dup, in: { id: "none" }, loop: { id: "none" } });
+    expect(host.project.elements[dup]).not.toHaveProperty("animation");
     await call("setBlendMode", { elementId: dup, blendMode: "screen" });
     expect(host.project.elements[dup]).toMatchObject({ blendMode: "screen" });
     expect((await call("setMask", { elementId: dup, type: "ellipse", feather: 0.2 })).mask.type).toBe("ellipse");

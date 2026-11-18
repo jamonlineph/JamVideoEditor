@@ -252,6 +252,39 @@ vec2 shortUv() { return uTexel / max(uTexel.x, uTexel.y); }
 vec4 sampleOr(vec2 uv, vec4 outside) {
   return (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) ? outside : texture(uTex, uv);
 }
+vec3 hueRotate(vec3 c, float deg) {
+  float a = radians(deg);
+  vec3 k = vec3(0.57735);
+  float ca = cos(a);
+  return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+}
+float lumaAt(vec2 uv) { return dot(unpremul(texture(uTex, uv)), LUMA); }
+// Sobel edge strength (0..~4) with samples d apart.
+float edgeAt(vec2 uv, vec2 d) {
+  float tl = lumaAt(uv + vec2(-d.x, -d.y)); float t = lumaAt(uv + vec2(0.0, -d.y)); float tr = lumaAt(uv + vec2(d.x, -d.y));
+  float l = lumaAt(uv + vec2(-d.x, 0.0)); float r = lumaAt(uv + vec2(d.x, 0.0));
+  float bl = lumaAt(uv + vec2(-d.x, d.y)); float b = lumaAt(uv + vec2(0.0, d.y)); float br = lumaAt(uv + vec2(d.x, d.y));
+  float gx = -tl - 2.0 * l - bl + tr + 2.0 * r + br;
+  float gy = -tl - 2.0 * t - tr + bl + 2.0 * b + br;
+  return sqrt(gx * gx + gy * gy);
+}
+// Particles: one per cell of a grid of "cells" across the short side; returns the brightest within reach.
+float particles(vec2 uv, float cells, float t, float radius, float seed) {
+  vec2 p = uv * vec2(aspect(), 1.0) * cells;
+  vec2 id = floor(p);
+  float best = 0.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 cell = id + vec2(float(x), float(y));
+      float h = hash(cell + seed);
+      if (h < 0.35) continue;
+      vec2 center = cell + vec2(hash(cell + seed + 1.3), hash(cell + seed + 7.1));
+      float d = length(p - center);
+      best = max(best, smoothstep(radius, radius * 0.3, d) * (0.5 + 0.5 * h));
+    }
+  }
+  return best;
+}
 
 void main() {
   vec4 c = texture(uTex, vUv);
@@ -387,6 +420,87 @@ void main() {
       }
     }
     c = mix(c, sum / wsum, uAmount);
+  } else if (uType == 23) {                           // invert
+    c.rgb = mix(c.rgb, vec3(c.a) - c.rgb, uAmount);
+  } else if (uType == 24) {                           // duotone: shadow hue, highlight hue
+    float l = dot(unpremul(c), LUMA);
+    vec3 dark = hueColor(uParams.x) * 0.3;
+    vec3 light = mix(hueColor(uParams.y), vec3(1.0), 0.45);
+    c.rgb = mix(c.rgb, mix(dark, light, smoothstep(0.05, 0.95, l)) * c.a, uAmount);
+  } else if (uType == 25) {                           // rainbow: speed (turns/s), spread
+    float shift = uSeconds * uParams.x * 120.0 + (vUv.x + vUv.y) * uParams.y * 360.0;
+    vec3 rot = clamp(hueRotate(unpremul(c), shift), 0.0, 1.0);
+    vec3 sat = mix(vec3(dot(rot, LUMA)), rot, 1.5);
+    c.rgb = mix(c.rgb, clamp(sat, 0.0, 1.0) * c.a, uAmount);
+  } else if (uType == 26) {                           // neon edges: hue, thickness px
+    float e = clamp(edgeAt(vUv, uTexel * max(uParams.y, 0.5)) * 1.6, 0.0, 1.0);
+    vec3 neon = mix(hueColor(uParams.x), vec3(1.0), e * e * 0.5) * e;
+    c.rgb = mix(c.rgb, (c.rgb * 0.12 + neon) * c.a, uAmount);
+  } else if (uType == 27) {                           // sketch: strength
+    float e = edgeAt(vUv, uTexel * 1.2) * (0.5 + uParams.x * 2.5);
+    float l = dot(unpremul(c), LUMA);
+    vec3 paper = vec3(0.96, 0.95, 0.92) * (0.9 + 0.1 * l);
+    c.rgb = mix(c.rgb, clamp(paper - e, 0.0, 1.0) * c.a, uAmount);
+  } else if (uType == 28) {                           // grid: n x n copies
+    float n = floor(max(uParams.x, 1.0) + 0.5);
+    c = mix(c, texture(uTex, fract(vUv * n)), uAmount);
+  } else if (uType == 29) {                           // triple: three panels (axis 0 stacked, 1 side by side)
+    vec2 uv = uParams.x < 0.5 ? vec2(vUv.x, 1.0 / 3.0 + fract(vUv.y * 3.0) / 3.0) : vec2(1.0 / 3.0 + fract(vUv.x * 3.0) / 3.0, vUv.y);
+    vec4 s = texture(uTex, uv);
+    float seam = uParams.x < 0.5 ? abs(fract(vUv.y * 3.0 + 0.5) - 0.5) : abs(fract(vUv.x * 3.0 + 0.5) - 0.5);
+    s.rgb *= smoothstep(0.0, 0.012, seam) * 0.15 + 0.85;
+    c = mix(c, s, uAmount);
+  } else if (uType == 30) {                           // old film: scratches, flicker
+    float frame = floor(uSeconds * 24.0);
+    vec3 col = unpremul(c);
+    float l = dot(col, LUMA);
+    vec3 sepia = vec3(l * 1.07, l * 0.92, l * 0.72) + 0.04;
+    float flick = 1.0 + (noise1(uSeconds * 14.0) - 0.5) * uParams.y * 0.6;
+    float sc = 0.0;
+    for (int i = 0; i < 4; i++) {
+      float h = hash(vec2(frame, float(i) * 3.7));
+      if (h > uParams.x) continue;
+      float x = hash(vec2(frame * 1.3, float(i)));
+      sc += (1.0 - smoothstep(0.0, uTexel.x * 1.5, abs(vUv.x - x))) * 0.6;
+    }
+    float d = distance(vUv, vec2(0.5)) * 1.41421;
+    vec3 film = (sepia * flick + sc) * (1.0 - 0.45 * smoothstep(0.5, 1.0, d));
+    film += (hash(vUv * 517.0 + frame) - 0.5) * 0.08;
+    c.rgb = mix(c.rgb, clamp(film, 0.0, 1.0) * c.a, uAmount);
+  } else if (uType == 31) {                           // snow: density, speed
+    float cells = mix(4.0, 14.0, uParams.x);
+    float fall = uSeconds * uParams.y * 0.06;
+    float f = particles(vUv + vec2(sin(uSeconds * 0.7) * 0.02, -fall), cells, uSeconds, 0.16, 1.0);
+    f = max(f, particles(vUv + vec2(0.0, -fall * 1.6), cells * 1.7, uSeconds, 0.12, 9.0) * 0.8);
+    c.rgb = mix(c.rgb, vec3(c.a), clamp(f, 0.0, 1.0) * uAmount);
+  } else if (uType == 32) {                           // sparkle: density, size
+    vec2 p = vUv * vec2(aspect(), 1.0) * mix(3.0, 9.0, uParams.x);
+    vec2 id = floor(p);
+    float star = 0.0;
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        vec2 cell = id + vec2(float(x), float(y));
+        float h = hash(cell + 4.2);
+        if (h < 0.45) continue;
+        vec2 d = p - (cell + vec2(hash(cell + 2.9), hash(cell + 8.3)));
+        float tw = pow(0.5 + 0.5 * sin(uSeconds * 4.0 + h * TAU * 3.0), 3.0);
+        float r = mix(0.05, 0.35, uParams.y) * tw;
+        float rays = max(exp(-abs(d.x) / (r * 0.12 + 1e-3)) * exp(-abs(d.y) / (r + 1e-3)), exp(-abs(d.y) / (r * 0.12 + 1e-3)) * exp(-abs(d.x) / (r + 1e-3)));
+        star = max(star, rays + smoothstep(r * 0.35, 0.0, length(d)));
+      }
+    }
+    vec3 gold = vec3(1.0, 0.93, 0.7);
+    c.rgb = min(vec3(c.a), c.rgb + gold * clamp(star, 0.0, 1.0) * uAmount * c.a);
+  } else if (uType == 33) {                           // wave: strength, frequency
+    vec2 uv = vUv + vec2(sin(vUv.y * uParams.y * 6.2831853 + uSeconds * 3.0), cos(vUv.x * uParams.y * 4.0 + uSeconds * 2.3)) * uParams.x * 0.025;
+    c = mix(c, texture(uTex, clamp(uv, 0.0, 1.0)), uAmount);
+  } else if (uType == 34) {                           // letterbox: bar size
+    float bar = uParams.x * 0.22 * uAmount;
+    float inside = smoothstep(bar - uTexel.y, bar, vUv.y) * smoothstep(bar - uTexel.y, bar, 1.0 - vUv.y);
+    c.rgb *= inside;
+  } else if (uType == 35) {                           // strobe: Hz
+    float on = uParams.x > 0.0 ? 1.0 - step(0.5, fract(uSeconds * uParams.x)) : 0.0;
+    c.rgb *= 1.0 - on * uAmount * 0.85;
   }
   outColor = c;
 }`;
@@ -535,6 +649,84 @@ void main() {
     float w = pow(1.0 - abs(2.0 * p - 1.0), 2.0);
     c = mix(p < 0.5 ? a : b, vec4(1.0), w);
   }
+  else if (uType == 18) c = mix(a, b, smoothstep(-0.02, 0.02, e - uv.x));                                              // wipe_right
+  else if (uType == 19) c = mix(a, b, smoothstep(-0.02, 0.02, uv.y - (1.0 - e)));                                      // wipe_up
+  else if (uType == 20) c = mix(a, b, smoothstep(-0.02, 0.02, e - uv.y));                                              // wipe_down
+  else if (uType == 21) c = uv.x >= e ? texture(uFrom, uv - vec2(e, 0.0)) : texture(uTo, uv + vec2(1.0 - e, 0.0));     // push_right
+  else if (uType == 22) c = uv.y >= e ? texture(uFrom, uv - vec2(0.0, e)) : texture(uTo, uv + vec2(0.0, 1.0 - e));     // push_down
+  else if (uType == 23) {                                                                                              // cross_zoom: zoom-blur in, cut, zoom-blur out
+    float k = sin(3.14159 * p) * 0.35;
+    vec4 sa = vec4(0.0);
+    vec4 sb = vec4(0.0);
+    for (int i = 0; i < 16; i++) {
+      float f = 1.0 - k * float(i) / 15.0;
+      vec2 q = (uv - 0.5) * f + 0.5;
+      sa += texture(uFrom, q);
+      sb += texture(uTo, q);
+    }
+    c = mix(sa, sb, smoothstep(0.4, 0.6, p)) / 16.0;
+    c.rgb = min(vec3(1.0), c.rgb + sin(3.14159 * p) * 0.15);
+  }
+  else if (uType == 24) {                                                                                              // pixelize
+    float cell = sin(3.14159 * p) * 0.08;
+    vec2 q = uv;
+    if (cell > 0.001) { vec2 cv = vec2(cell / uAspect, cell); q = (floor(uv / cv) + 0.5) * cv; }
+    c = mix(texture(uFrom, q), texture(uTo, q), smoothstep(0.4, 0.6, p));
+  }
+  else if (uType == 25) {                                                                                              // doors_open: the picture parts in the middle
+    float h = e * 0.5;
+    if (uv.x < 0.5) c = uv.x + h < 0.5 ? texture(uFrom, uv + vec2(h, 0.0)) : b;
+    else c = uv.x - h >= 0.5 ? texture(uFrom, uv - vec2(h, 0.0)) : b;
+  }
+  else if (uType == 26) c = mix(a, b, smoothstep(-0.03, 0.03, e - fract(uv.y * 10.0)));                               // blinds
+  else if (uType == 27) {                                                                                              // diamond
+    vec2 d = abs(uv - 0.5) * vec2(uAspect, 1.0);
+    float r = e * (uAspect * 0.5 + 0.5) * 1.02;
+    c = mix(b, a, smoothstep(-0.006, 0.006, d.x + d.y - r));
+  }
+  else if (uType == 28) {                                                                                              // heart reveal
+    float sc = max(e * e * 3.2, 1e-4);
+    vec2 q = vec2((uv.x - 0.5) * uAspect, -(uv.y - 0.55)) / sc;
+    float f = pow(q.x * q.x + q.y * q.y - 1.0, 3.0) - q.x * q.x * q.y * q.y * q.y;
+    c = mix(b, a, smoothstep(-0.02, 0.02, f));
+  }
+  else if (uType == 29) {                                                                                              // ripple
+    vec2 dv = (uv - 0.5) * vec2(uAspect, 1.0);
+    float d = length(dv) + 1e-4;
+    vec2 off = (dv / d) * sin(d * 40.0 - p * 25.0) * 0.025 * sin(3.14159 * p) / vec2(uAspect, 1.0);
+    c = mix(texture(uFrom, uv + off), texture(uTo, uv + off), smoothstep(0.3, 0.7, p));
+  }
+  else if (uType == 30) {                                                                                              // swirl
+    vec2 dv = (uv - 0.5) * vec2(uAspect, 1.0);
+    float d = length(dv);
+    float ang = sin(3.14159 * p) * 7.0 * max(0.0, 1.0 - d / 0.9);
+    vec2 r = vec2(dv.x * cos(ang) - dv.y * sin(ang), dv.x * sin(ang) + dv.y * cos(ang)) / vec2(uAspect, 1.0) + 0.5;
+    c = mix(texture(uFrom, r), texture(uTo, r), smoothstep(0.35, 0.65, p));
+  }
+  else if (uType == 31) {                                                                                              // squeeze: the old picture is pressed to the left by the new
+    float edge = 1.0 - e;
+    c = uv.x < edge ? texture(uFrom, vec2(uv.x / max(edge, 1e-4), uv.y)) : texture(uTo, vec2((uv.x - edge) / max(e, 1e-4), uv.y));
+  }
+  else if (uType == 32) {                                                                                              // film burn
+    float g = sin(3.14159 * p);
+    vec4 base = mix(a, b, smoothstep(0.35, 0.65, p));
+    float shape = smoothstep(0.0, 1.0, 1.0 - distance(uv * vec2(uAspect, 1.0), vec2((1.2 - p * 1.4) * uAspect, 0.35)) * 0.9);
+    c = vec4(min(vec3(1.0), base.rgb + vec3(1.0, 0.5, 0.12) * g * shape * 1.6 + g * 0.12), 1.0);
+  }
+  else if (uType == 33) {                                                                                              // shake
+    float amp = sin(3.14159 * p) * 0.05;
+    vec2 q = (uv - 0.5) / (1.0 + amp * 3.0) + 0.5 + vec2(sin(p * 91.0), cos(p * 73.0)) * amp;
+    c = p < 0.5 ? texture(uFrom, q) : texture(uTo, q);
+  }
+  else if (uType == 34) {                                                                                              // roll_up: vertical push with motion blur
+    vec4 s = vec4(0.0);
+    float blur = sin(3.14159 * p) * 0.12;
+    for (int i = -6; i <= 6; i++) {
+      vec2 w = uv + vec2(0.0, float(i) / 6.0 * blur);
+      s += w.y < 1.0 - e ? texture(uFrom, w + vec2(0.0, e)) : texture(uTo, w - vec2(0.0, 1.0 - e));
+    }
+    c = s / 13.0;
+  }
   else c = mix(a, b, p);
   outColor = c;
 }`;
@@ -558,6 +750,23 @@ export const TRANSITION_TYPES: Record<string, number> = {
   zoom_out: 10,
   wipe_left: 11,
   circle_reveal: 12,
+  wipe_right: 18,
+  wipe_up: 19,
+  wipe_down: 20,
+  push_right: 21,
+  push_down: 22,
+  cross_zoom: 23,
+  pixelize: 24,
+  doors_open: 25,
+  blinds: 26,
+  diamond: 27,
+  heart: 28,
+  ripple: 29,
+  swirl: 30,
+  squeeze: 31,
+  film_burn: 32,
+  shake: 33,
+  roll_up: 34,
 };
 
 /** Transition ids drawn with their own shader (others fall back to a dissolve). */
@@ -601,6 +810,19 @@ export const EFFECT_TYPES: Record<string, number> = {
   shake: 20,
   zoom_pulse: 21,
   denoise: 22,
+  invert: 23,
+  duotone: 24,
+  rainbow: 25,
+  neon_edges: 26,
+  sketch: 27,
+  grid: 28,
+  triple: 29,
+  old_film: 30,
+  snow: 31,
+  sparkle: 32,
+  wave: 33,
+  letterbox: 34,
+  strobe: 35,
 };
 
 /** The second glow pass (adds the blurred highlights back). */

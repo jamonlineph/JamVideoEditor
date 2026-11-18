@@ -68,6 +68,11 @@ export class AppHarness {
     return this.eval<T>(`window.openedits.live.call(${JSON.stringify(tool)}, ${JSON.stringify(args)})`);
   }
 
+  /** Resize the window's content area (phone and tablet layouts). */
+  resize(width: number, height: number) {
+    return this.send<[number, number]>("resize", { width, height });
+  }
+
   capture(file: string) {
     return this.send<{ width: number; height: number }>("capture", { path: file });
   }

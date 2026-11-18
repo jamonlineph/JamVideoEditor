@@ -222,6 +222,13 @@ function testHarness() {
         const image = await win!.webContents.capturePage();
         fs.writeFileSync(msg.path!, image.toPNG());
         result = image.getSize();
+      } else if (msg.op === "resize") {
+        // Phone and tablet layouts: let the window go below its desktop minimum size.
+        const { width, height } = msg as unknown as { width: number; height: number };
+        win!.setMinimumSize(320, 400);
+        win!.setContentSize(width, height);
+        await new Promise((r) => setTimeout(r, 300));
+        result = win!.getContentSize();
       } else if (msg.op === "quit") {
         app.quit();
         result = true;

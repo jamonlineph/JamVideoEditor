@@ -166,12 +166,14 @@ describe("property: invariants under random edits", () => {
 
 describe("catalog and migrations", () => {
   it("has the required catalog sizes", () => {
-    expect(TEXT_PRESETS.length).toBe(34);
+    expect(TEXT_PRESETS.length).toBe(50);
     expect(CAPTION_STYLES.length).toBe(39);
-    expect(TOOL_PANELS.length).toBe(42);
-    expect(new Set(TEXT_PRESETS.map((p) => p.id)).size).toBe(34);
-    expect(new Set(CAPTION_STYLES.map((p) => p.id)).size).toBe(39);
-    expect(new Set(TOOL_PANELS.map((p) => p.id)).size).toBe(42);
+    expect(TOOL_PANELS.length).toBe(43);
+    // Ids are unique within every catalog.
+    for (const k of listCatalogKinds()) {
+      const items = listCatalog(k.kind, { limit: 1000 }).items;
+      expect(new Set(items.map((i) => i.id)).size, k.kind).toBe(items.length);
+    }
     const kinds = listCatalogKinds();
     expect(kinds.find((k) => k.kind === "luts")!.count).toBe(17);
     expect(listCatalog("captionStyles", { query: "highlight box" }).total).toBe(3);

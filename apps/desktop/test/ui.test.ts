@@ -68,7 +68,7 @@ describe("desktop app", () => {
     const [first] = await mainIds();
     await app.call("setSelection", { elementIds: [first] });
     await app.waitFor(`document.querySelector(".inspector .kind")?.textContent.startsWith("video")`);
-    expect(await app.eval(clickButton("Adjust", ".panel-list"))).toBe(true);
+    expect(await app.eval(clickButton("Color", ".prop-tabs"))).toBe(true);
     await app.waitFor(`!!document.querySelector(".inspector .field input[type=range]")`);
     const before = await app.eval<number>("window.openedits.live.state.version");
     expect(await app.eval(setSlider("Exposure", 40))).toBe(true);
@@ -78,14 +78,14 @@ describe("desktop app", () => {
   });
 
   it("shows rendered previews on effect, transition, filter and LUT tiles, animated on hover", async () => {
-    await app.eval(clickButton("Effects", ".dock .tabs"));
-    for (const [chip, kind] of [["Effects", "effect"], ["Transitions", "transition"], ["Filters", "filter"], ["LUTs", "lut"]] as const) {
-      expect(await app.eval(clickButton(chip, ".dock .chips"))).toBe(true);
+    for (const [tab, kind, chip] of [["Effects", "effect"], ["Transitions", "transition"], ["Filters", "filter"], ["Adjust", "lut", "LUTs"]] as const) {
+      expect(await app.eval(clickButton(tab, ".dock .tabs"))).toBe(true);
+      if (chip) expect(await app.eval(clickButton(chip, ".dock .chips"))).toBe(true);
       // The first tiles get a still rendered by the compositor (a JPEG data URL).
       await app.waitFor(`[...document.querySelectorAll('.dock .tile.preview[data-preview^="${kind}:"] img')].filter((i) => i.src.startsWith("data:image/jpeg")).length >= 4`, 30_000);
     }
     // Hovering a transition plays it.
-    await app.eval(clickButton("Transitions", ".dock .chips"));
+    await app.eval(clickButton("Transitions", ".dock .tabs"));
     const sel = `.dock .tile.preview[data-preview="transition:slide_left"]`;
     await app.waitFor(`!!document.querySelector('${sel} img')`, 30_000);
     await app.eval(`document.querySelector('${sel} img').dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }))`);
@@ -106,7 +106,7 @@ describe("desktop app", () => {
     const [first] = await mainIds();
     await app.call("setSelection", { elementIds: [first] });
     await app.waitFor(`!!document.querySelector(".panel-list")`);
-    expect(await app.eval(clickButton("Transform", ".panel-list"))).toBe(true);
+    expect(await app.eval(clickButton("Basic", ".prop-tabs"))).toBe(true);
     const scaleInput = `[...document.querySelectorAll(".inspector .field")].find((f) => f.querySelector("label")?.textContent?.trim().endsWith("Scale")).querySelector("input")`;
     await app.eval(`(() => {
       const input = ${scaleInput};
@@ -138,6 +138,95 @@ describe("desktop app", () => {
     await app.waitFor(`window.openedits.live.state.project.elements[${JSON.stringify(first)}].duration < ${before - 0.5}`);
     const after = (await project()).elements[first].duration as number;
     expect(after).toBeCloseTo(before - 1, 1); // 60 px at the default 60 px/s
+  });
+
+  it("shows film-strip frames on video clips and pictures in the media grid", async () => {
+    await app.waitFor(`[...document.querySelectorAll(".lane.main .clip .filmstrip .frame")].some((f) => f.style.backgroundImage.includes("blob:"))`, 30_000);
+    await app.eval(clickButton("Media", ".dock .tabs"));
+    await app.waitFor(`[...document.querySelectorAll(".media-item .thumb img")].some((i) => i.src.startsWith("blob:"))`, 30_000);
+  });
+
+  it("animates a clip from the Animation tab (in, then a combo)", async () => {
+    const [first] = await mainIds();
+    await app.call("setSelection", { elementIds: [first] });
+    await app.waitFor(`!!document.querySelector(".prop-tabs")`);
+    expect(await app.eval(clickButton("Animation", ".prop-tabs"))).toBe(true);
+    await app.waitFor(`!!document.querySelector('.anim-tile[data-anim="zoom_in"]')`);
+    await app.eval(`document.querySelector('.anim-tile[data-anim="zoom_in"]').click()`);
+    await app.waitFor(`window.openedits.live.state.project.elements[${JSON.stringify(first)}].animation?.in?.id === "zoom_in"`);
+    expect(await app.eval(clickButton("Combo", ".anim-slots"))).toBe(true);
+    await app.waitFor(`!!document.querySelector('.anim-tile[data-anim="ken_burns"]')`);
+    await app.eval(`document.querySelector('.anim-tile[data-anim="ken_burns"]').click()`);
+    await app.waitFor(`window.openedits.live.state.project.elements[${JSON.stringify(first)}].animation?.loop?.id === "ken_burns"`);
+    // The clip on the timeline says it is animated.
+    await app.waitFor(`!!document.querySelector('.clip[data-id=${JSON.stringify(first)}] .chip-mini[title="Animated"]')`);
+    await shot("animation");
+  });
+
+  it("puts a transition on a cut from the button between clips", async () => {
+    const [first] = await mainIds();
+    await app.call("setSelection", { elementIds: [] });
+    await app.waitFor(`!!document.querySelector('.tr-btn[data-from=${JSON.stringify(first)}]')`);
+    await app.eval(`document.querySelector('.tr-btn[data-from=${JSON.stringify(first)}]').click()`);
+    // The library switches to transitions, aimed at that cut.
+    await app.waitFor(`document.querySelector(".dock .tabs button.active")?.textContent.trim() === "Transitions"`);
+    await app.waitFor(`window.openedits.live.state.appState.selection.elementIds[0] === ${JSON.stringify(first)}`);
+    await app.waitFor(`!!document.querySelector('.dock .tile.preview[data-preview="transition:heart"]')`, 30_000);
+    await app.eval(`document.querySelector('.dock .tile.preview[data-preview="transition:heart"]').click()`);
+    await app.waitFor(`window.openedits.live.state.project.transitions.some((t) => t.fromElementId === ${JSON.stringify(first)} && t.type === "heart")`);
+    await app.waitFor(`document.querySelector('.tr-btn[data-from=${JSON.stringify(first)}]')?.classList.contains("on")`);
+    // Apply to all copies it onto every cut.
+    expect(await app.eval(clickButton("Apply to all", ".dock"))).toBe(true);
+    const cuts = (await mainIds()).length - 1;
+    await app.waitFor(`window.openedits.live.state.project.transitions.filter((t) => t.type === "heart").length === ${cuts}`);
+  });
+
+  it("adds an effect with nothing selected on its own layer, and colorful stickers and text styles", async () => {
+    await app.call("setSelection", { elementIds: [] });
+    await app.call("setPlayhead", { seconds: 1 });
+    expect(await app.eval(clickButton("Effects", ".dock .tabs"))).toBe(true);
+    await app.waitFor(`!!document.querySelector('.dock .tile.preview[data-preview="effect:snow"]')`, 30_000);
+    await app.eval(`document.querySelector('.dock .tile.preview[data-preview="effect:snow"]').click()`);
+    await app.waitFor(`Object.values(window.openedits.live.state.project.elements).some((e) => e.type === "adjustment" && e.effects.some((f) => f.effectId === "snow"))`);
+    expect(await app.eval(clickButton("Stickers", ".dock .tabs"))).toBe(true);
+    await app.waitFor(`!!document.querySelector('.sticker-tile[data-sticker="fire"] svg path')`);
+    await app.eval(`document.querySelector('.sticker-tile[data-sticker="fire"]').click()`);
+    await app.waitFor(`Object.values(window.openedits.live.state.project.elements).some((e) => e.type === "sticker" && e.stickerId === "fire")`);
+    expect(await app.eval(clickButton("Text", ".dock .tabs"))).toBe(true);
+    const added = await app.eval<boolean>(`(() => { const t = [...document.querySelectorAll(".dock .text-tile")].find((x) => x.querySelector(".label")?.textContent === "Bold Pop"); t?.click(); return !!t; })()`);
+    expect(added).toBe(true);
+    await app.waitFor(`Object.values(window.openedits.live.state.project.elements).some((e) => e.type === "text" && e.presetId === "bold_pop")`);
+    // A new text is selected and its properties open on the Text tab.
+    await app.waitFor(`document.querySelector(".inspector")?.dataset.type === "text"`);
+    await shot("library-adds");
+    for (const id of await app.eval<string[]>(`Object.values(window.openedits.live.state.project.elements).filter((e) => e.type === "adjustment" || e.type === "sticker" || (e.type === "text" && e.presetId === "bold_pop")).map((e) => e.id)`)) {
+      await app.call("delete", { elementIds: [id] });
+    }
+  });
+
+  it("works as a phone: tool bar, bottom sheets and clip tools", async () => {
+    await app.resize(412, 860);
+    try {
+      await app.call("setSelection", { elementIds: [] });
+      await app.waitFor(`!!document.querySelector(".bottom-bar") && !document.querySelector(".editor-library")`);
+      expect(await app.eval(clickButton("Text", ".bottom-bar"))).toBe(true);
+      await app.waitFor(`document.querySelector(".bottom-sheet")?.textContent.includes("Add text")`);
+      await shot("phone-sheet");
+      expect(await app.eval(clickButton("", ".bottom-sheet header"))).toBe(true);
+      await app.waitFor(`!document.querySelector(".bottom-sheet")`);
+      const [first] = await mainIds();
+      await app.call("setSelection", { elementIds: [first] });
+      await app.waitFor(`document.querySelector(".bottom-bar")?.classList.contains("selection")`);
+      expect(await app.eval(clickButton("Speed", ".bottom-bar"))).toBe(true);
+      await app.waitFor(`[...document.querySelectorAll(".bottom-sheet .field label")].some((l) => l.textContent.trim() === "Speed")`);
+      await shot("phone-speed");
+      await app.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+      await app.waitFor(`!document.querySelector(".bottom-sheet")`);
+      await app.call("setSelection", { elementIds: [] });
+    } finally {
+      await app.resize(1480, 920);
+    }
+    await app.waitFor(`!!document.querySelector(".editor-library")`);
   });
 
   it("splits with the keyboard and undoes with Cmd+Z", async () => {
@@ -177,5 +266,11 @@ describe("desktop app", () => {
     const vo = Object.values((await project()).elements).find((e) => e.type === "audio" && e.role === "voiceover");
     expect(vo).toBeDefined();
     expect(vo!.start).toBeCloseTo(0.5, 2);
+  }, 60_000);
+
+  it("saves a cover frame for the project grid when going back to projects", async () => {
+    await app.eval(`document.querySelector(".back-projects").click()`);
+    await app.waitFor(`!!document.querySelector(".home .card img.poster")`, 30_000);
+    await shot("home-cover");
   }, 60_000);
 });

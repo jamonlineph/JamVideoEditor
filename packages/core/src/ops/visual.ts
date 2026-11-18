@@ -212,6 +212,32 @@ export function setOpacity(ctx: EditContext, el: Element, opacity: number) {
   ctx.touch(el.id);
 }
 
+type AnimationSlots = { in?: { id: string; durationSeconds: number }; out?: { id: string; durationSeconds: number }; loop?: { id: string; durationSeconds: number } };
+
+/** In / out / combo animations of a video, photo, sticker or shape; id "none" clears a slot. */
+export function setClipAnimation(ctx: EditContext, el: Element, anim: AnimationSlots) {
+  if (el.type !== "video" && el.type !== "image" && el.type !== "sticker" && el.type !== "shape") {
+    throw new EditError("INVALID_ELEMENT_TYPE", `Element ${el.id} (${el.type}) has no clip animations${el.type === "text" ? "; use setTextAnimation" : ""}`);
+  }
+  assertUnlocked(ctx.draft, el);
+  const next: AnimationSlots = { ...(el.animation ?? {}) };
+  for (const k of ["in", "out", "loop"] as const) {
+    const ref = anim[k];
+    if (!ref) continue;
+    if (ref.id === "none") delete next[k];
+    else next[k] = { id: ref.id, durationSeconds: Math.min(ref.durationSeconds, k === "loop" ? 10 : el.duration) };
+  }
+  if (next.in && next.out && next.in.durationSeconds + next.out.durationSeconds > el.duration) {
+    // Keep both inside the clip: shrink them in proportion.
+    const k = el.duration / (next.in.durationSeconds + next.out.durationSeconds);
+    next.in = { ...next.in, durationSeconds: next.in.durationSeconds * k };
+    next.out = { ...next.out, durationSeconds: next.out.durationSeconds * k };
+  }
+  if (next.in || next.out || next.loop) el.animation = next;
+  else delete el.animation;
+  ctx.touch(el.id);
+}
+
 export function setBlendMode(ctx: EditContext, el: Element, mode: BlendMode) {
   if (!("blendMode" in el)) throw new EditError("INVALID_ELEMENT_TYPE", `Element ${el.id} (${el.type}) has no blend mode`);
   assertUnlocked(ctx.draft, el);

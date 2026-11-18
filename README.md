@@ -2,7 +2,7 @@
 
 A local-first video editor with a built-in MCP server. Creators edit in the desktop UI, and AI agents inspect and edit the same live composition through MCP tools.
 
-**Status: Phases 1–5.** The composition engine, persistence, a GPU compositor with frame capture, previews and export, audio analysis, word-ID transcript editing, on-device vision, a hands-free autopilot, an MCP server with 158 tools, and the Electron desktop app. Everything is covered by tests, including end-to-end tests that drive the real app window.
+**Status: Phases 1–5.** The composition engine, persistence, a GPU compositor with frame capture, previews and export, audio analysis, word-ID transcript editing, on-device vision, a hands-free autopilot, an MCP server with 159 tools, and the Electron desktop app. Everything is covered by tests, including end-to-end tests that drive the real app window.
 
 ## Install the app
 
@@ -26,7 +26,7 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 - The app contains the whole editor: the engine, FFmpeg and ffprobe, eSpeak NG for text to speech, and the same UI and compositor as the desktop app. One `.apk` covers 64-bit ARM (`arm64-v8a`) and Intel/AMD (`x86_64`) devices, Android 10 and later.
 - **Importing:** *Import* and *Start from videos* open Android's file picker. You can also **Share** videos, music or pictures to OpenEdits Studio from Files, Photos or any other app (or *Open with* for videos): they land in the Home screen's *Inbox*, and in the open project.
 - **Exports** are kept in the app's workspace; the export dialog's **Download** button copies a video to *Movies/OpenEdits Studio* (it then shows up in Photos and Files), audio to *Music* and pictures to *Pictures*.
-- **Editing in a resized window:** use **Library** to import or add media and **Inspector** to edit the selected clip. These panels open over the preview in compact windows. **Preview → Quality → Draft** reduces playback resolution while keeping your export settings. **Fit** shows the full cut in the timeline.
+- **Editing on a small screen:** the tool bar along the bottom opens the library panels (Media to import, Text, Stickers, Effects and more) as sheets; select a clip and the tool bar switches to its tools (Split, Basic, Animation, Speed, Audio, Color, Filters). **Canvas → Preview quality → Draft** (or the quality menu under the preview in wide windows) reduces playback resolution while keeping your export settings. **Fit** shows the full cut in the timeline.
 - **Export progress** stays in the editor header if you hide the dialog. Reopen **Export** to cancel an active render or download a finished video.
 - **Voiceovers** use the device's microphone (the app asks the first time).
 - **Exports keep going in the background**: while the editor is open the app shows a quiet notification, which keeps Android from pausing it.
@@ -201,12 +201,13 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
 ## Desktop app (`apps/desktop`)
 
 - **Process model.** The Electron main process starts or joins `openedits serve` and opens one window. The window is a pure `/live` client: every button, slider and drag calls the same tool handlers agents use. The engine runs in its own process on the Node.js built into Electron and stores projects with Node's built-in SQLite (`node:sqlite`), so the app has no native modules and needs no separate Node install. In the packaged app the same binary also serves as the hidden compositor window (`--openedits-render-host`).
-- **Home.** A project grid with search, pinned and favorite filters, rename, delete, and a new project at any aspect. Also the inbox (one click makes a project), autopilot jobs, and the shortcut map picker.
-- **Editor.** Four panes:
-  - **Media dock:** import, drag and drop, filters, and audio from `brand/music` and `brand/sfx`; text presets and caption styles; filters, effects, transitions, LUTs and stickers. Every filter, effect, transition, adjust preset and LUT tile shows a preview drawn by the real compositor on built-in sample pictures; hovering a tile animates it (effects sweep in, transitions play, LUTs slide a log/Rec.709 divider).
-  - **Viewport:** the WebGL compositor, the same one export uses. It has on-canvas move, scale and rotate handles, which preview live and commit one undo step on release, plus a 10% grid and the transport.
-  - **Inspector:** the 42 tool panels filtered to the selected clip, with sliders that commit on release, keyframe diamonds at the playhead, curves, HSL, wheels, effects, captions and text-to-speech. With nothing selected it shows canvas, ripple, brief and transcript actions.
-  - **Timeline:** ruler and beat markers, scrubbing, lock, mute and hide per track, move, reorder and trim with snapping, moves between the main track and overlays, waveforms, keyframes and transitions, and zoom with Ctrl or Cmd and the wheel.
+- **Home.** A big *New project* card with the shape picked right on it (9:16, 16:9, 1:1, 4:5), *Start from videos*, the inbox (one click makes a project), and a project grid with cover frames, search, pinned and favorite filters, rename and delete. Autopilot jobs and the shortcut map picker sit in the side column.
+- **Editor.** Laid out like the short-video editors creators already know:
+  - **Library (left):** an icon rail with Media, Audio, Text, Stickers, Effects, Transitions, Filters, Adjust and Captions. Each panel has category chips and search. Media shows a thumbnail grid (import, drag and drop, hover *+* to add, overlay button, unused filter). Effects and filters apply to the selected clip, or, with nothing selected, go on their own adjustment layer at the playhead. Transitions apply to the selected cut, with duration, *Apply to all* and *Remove*. Every filter, effect, transition, adjust preset and LUT tile shows a preview drawn by the real compositor; hovering a tile animates it.
+  - **Player (center):** the WebGL compositor, the same one export uses, with on-canvas move, scale and rotate handles (one undo step per gesture). Under it: timecode, frame and edit stepping, loop, grid guides, the canvas ratio, preview quality and full screen.
+  - **Properties (right):** tabs for the selected clip — Text, Style, Basic, Animation, Speed, Audio, Color, Effects and Smart — that stack the 43 tool panels in collapsible sections. Animation tabs (In / Out / Combo for clips, In / Out / Loop for text) show tiles that play their motion on hover, plus a duration slider. With nothing selected it shows the canvas (ratio cards, resolution, frame rate, background), timeline switches, the brief and transcript clean-up.
+  - **Timeline (bottom, resizable):** an icon toolbar (undo, redo, split, delete, duplicate, reverse, mirror, rotate, crop, speed, animation; magnet, snapping, ripple, zoom and fit), film-strip frames on video and photo clips, waveforms, badges for speed, animation and effects, a transition button on every cut between main-track clips, and a *+* to add media at the end. Lock, mute and hide per track, move, reorder and trim with snapping, moves between the main track and overlays, and zoom with Ctrl or Cmd and the wheel.
+  - **Phones and narrow windows** (the Android app, a narrow browser): the preview, the timeline and a tool bar along the bottom. With nothing selected the tool bar opens the library panels; with a clip selected it shows that clip's tools (split, the property tabs, filters, duplicate, delete). Panels open as bottom sheets.
 - **Playback.** Video frames come from the compositor. Audio is the engine's own mixdown (`previewAudio`, cached per project version), which keeps preview and export sounding the same.
 - **Recording and shortcuts.** A teleprompter, and a voiceover recorder with a dB meter and countdown. Agents can start and stop a take with `startVoiceoverRecording` and `stopVoiceoverRecording`. Five shortcut maps: Edits, CapCut, Premiere Pro, Final Cut Pro and DaVinci Resolve.
 - **Tests.** `apps/desktop/test/ui.test.ts` launches the real app with a hidden window and an MCP agent on the same engine. It checks:
@@ -217,6 +218,11 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
   - a trim drag on the timeline
   - keyboard split and undo
   - an agent-triggered voiceover take
+  - film-strip frames on clips and media thumbnails
+  - clip animations from the Animation tab, and transitions from the buttons between clips
+  - effects added with nothing selected (their own layer), full-color stickers and text styles
+  - the phone layout's tool bar and bottom sheets
+  - the cover frame saved for the project grid
   
   In tests a generated tone stands in for the microphone, because macOS microphone permission can't be granted headlessly.
 
@@ -243,17 +249,17 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
 
 All presets are original to OpenEdits; no assets are copied from other apps. The catalog includes:
 
-- 34 text presets and 39 caption styles
-- 22 text animations
-- 24 filters and 12 adjust presets
+- 50 text presets and 39 caption styles
+- 35 text animations (in, out and loop) and 36 clip animations for videos, photos, stickers and shapes (in, out and combo: Ken Burns, pans, pulse, rock, spin and more)
+- 40 filters and 12 adjust presets
 - 16 camera log → Rec.709 LUT entries, plus custom `.cube` files
-- 25 effects and 18 transitions
-- 20 vector stickers and 4 shapes
+- 38 effects (including split grids, duotone, rainbow, neon edges, sketch, old film, snow, sparkle, wave, cinema bars and strobe) and 35 transitions (including wipes in every direction, pull-in zoom, pixelize, doors, blinds, diamond and heart reveals, ripple, swirl, squeeze, film burn, shake and roll)
+- 42 stickers (22 in full color) and 4 shapes
 - 8 speed-ramp presets
-- 42 inspector tool panels
+- 43 inspector tool panels
 
 ## Roadmap
 
 - **Phase 3: rendering and audio analysis.** Done (see above). Left for later: bundled camera LUTs generated from the vendors' log curves, HDR tone mapping, and media-bin thumbnails.
 - **Phase 4: transcripts and AI.** Done (see above). Not done: speaker diarization, and a learned (rather than speech-band) voice isolation model.
-- **Phase 5: Electron and React desktop UI.** Done (see above). Not done: thumbnails on video clips and in the media bin, a crop handle on the canvas (crop is in the inspector), app packaging and signing, and a check of real microphone capture (the tests use a generated tone).
+- **Phase 5: Electron and React desktop UI.** Done (see above). Not done: a crop handle on the canvas (crop is in the inspector), app packaging and signing, and a check of real microphone capture (the tests use a generated tone).

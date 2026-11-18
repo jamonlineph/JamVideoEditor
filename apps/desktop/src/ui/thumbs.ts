@@ -36,6 +36,12 @@ export const THUMB_H = 180;
  */
 const PREVIEW_PARAMS: Record<string, Record<string, number>> = {
   blur: { radius: 100 },
+  letterbox: { size: 100 },
+  wave: { amount: 100, frequency: 6 },
+  neon_edges: { thickness: 3 },
+  sketch: { strength: 80 },
+  sparkle: { density: 60, size: 90 },
+  snow: { density: 40 },
   motion_blur: { amount: 90 },
   zoom_blur: { amount: 80 },
   tilt_shift: { width: 0.12 },
@@ -53,7 +59,7 @@ const PREVIEW_PARAMS: Record<string, Record<string, number>> = {
 };
 
 /** Effects that move over time: their still is taken at the moment they show most. */
-const ANIMATED = new Set(["flash", "zoom_pulse", "shake", "glitch", "light_leak", "vhs", "film_grain"]);
+const ANIMATED = new Set(["flash", "zoom_pulse", "shake", "glitch", "light_leak", "vhs", "film_grain", "rainbow", "snow", "sparkle", "wave", "old_film", "strobe"]);
 
 type Pixels = Uint8ClampedArray;
 

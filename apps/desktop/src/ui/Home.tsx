@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import path from "node:path";
 import { ipcRenderer } from "electron";
-import { additiveClick, live, useLive, WEB, WORKSPACE } from "./live.js";
+import { additiveClick, fileUrl, live, useLive, WEB, WORKSPACE } from "./live.js";
 import { SHORTCUT_MAPS, type ShortcutMapId } from "./shortcuts.js";
+import { Icon } from "./Icon.js";
 
 interface ProjectRow {
   id: string;
@@ -12,6 +13,7 @@ interface ProjectRow {
   favorite: boolean;
   durationSeconds: number;
   aspectRatio: string;
+  thumbnailPath?: string | null;
 }
 interface InboxFile {
   name: string;
@@ -168,7 +170,7 @@ export function Home() {
 
   return (
     <>
-      <div className="titlebar">
+      <div className="titlebar home-titlebar">
         <span className="brand">
           <Logo />
           <span>
@@ -177,16 +179,8 @@ export function Home() {
         </span>
         <span className={`status-dot ${s.connected ? "" : "off"}`} title={s.connected ? "Engine connected" : "Engine disconnected"} />
         <div className="spacer" />
-        <div className="segmented" role="radiogroup" aria-label="Shape of new projects">
-          {ASPECTS.map((a) => (
-            <button key={a.id} role="radio" aria-checked={aspect === a.id} className={aspect === a.id ? "on" : ""} onClick={() => setAspect(a.id)} title={`${a.label} (${a.id}): ${a.hint}`}>
-              <span className="aspect-glyph" style={{ aspectRatio: a.id.replace(":", " / ") }} />
-              <span className="label">{a.id}</span>
-            </button>
-          ))}
-        </div>
         <button onClick={() => void startFromVideos()} disabled={starting || !s.connected} title="Pick videos and start a project with them">
-          {starting ? "Adding…" : "Start from videos"}
+          <Icon name="import" size={16} /> {starting ? "Adding…" : "Start from videos"}
         </button>
         <button className="primary" onClick={newProject}>
           New project
@@ -194,6 +188,47 @@ export function Home() {
       </div>
       <div className="home">
         <main>
+          <section className="hero">
+            <div className="create-card">
+              <button className="create-main" onClick={newProject} disabled={!s.connected} aria-label="Create a new project">
+                <span className="plus-orb"><Icon name="plus" size={30} /></span>
+                <span className="create-text">
+                  <b>New project</b>
+                  <span>{ASPECTS.find((a) => a.id === aspect)!.label} {aspect} · {ASPECTS.find((a) => a.id === aspect)!.hint}</span>
+                </span>
+              </button>
+              <div className="aspect-row" role="radiogroup" aria-label="Shape of new projects">
+                {ASPECTS.map((a) => (
+                  <button key={a.id} role="radio" aria-checked={aspect === a.id} className={aspect === a.id ? "on" : ""} onClick={() => setAspect(a.id)} title={`${a.label} (${a.id}): ${a.hint}`}>
+                    <span className="aspect-glyph" style={{ aspectRatio: a.id.replace(":", " / ") }} />
+                    <span className="label">{a.id}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button className="quick-card" onClick={() => void startFromVideos()} disabled={starting || !s.connected}>
+              <span className="quick-icon v"><Icon name="media" size={22} /></span>
+              <b>{starting ? "Adding…" : "Start from videos"}</b>
+              <span className="muted small">Pick clips; they go on the timeline in order</span>
+            </button>
+            <div className="quick-card inbox-card">
+              <span className="quick-icon i"><Icon name="folder" size={22} /></span>
+              <b>Inbox {inbox.length ? <span className="count">{inbox.length}</span> : null}</b>
+              {inbox.length === 0 ? (
+                <span className="muted small">{WEB ? "Videos you share to OpenEdits Studio land here." : <>Drop media into {path.join(WORKSPACE, "inbox")}.</>}</span>
+              ) : (
+                <div className="inbox-list">
+                  {inbox.slice(0, 3).map((f) => (
+                    <div className="list-row" key={f.path}>
+                      <span className={`kind-dot ${f.kind}`}><Icon name={f.kind === "video" ? "media" : f.kind === "audio" ? "audio" : "image"} size={12} /></span>
+                      <span className="grow ellipsis" title={f.name}>{f.name}</span>
+                      <button className="small-btn" onClick={() => void live.run("create_project", { files: [f.name], canvas: { aspectRatio: aspect } })}>Edit</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
           <div className="toolbar">
             <h1>Projects</h1>
             <div className="segmented small-seg">
@@ -240,18 +275,9 @@ export function Home() {
             loaded && filtered ? (
               <div className="empty">Nothing matches. Try another search or filter.</div>
             ) : (
-              <div className="empty hero">
-                <Logo size={56} />
+              <div className="empty empty-projects">
                 <h2>No projects yet</h2>
-                <p className="muted">Start with the videos you want to edit, or an empty {ASPECTS.find((a) => a.id === aspect)!.label.toLowerCase()} canvas.</p>
-                <div className="row" style={{ justifyContent: "center" }}>
-                  <button className="primary big" onClick={() => void startFromVideos()} disabled={starting || !s.connected}>
-                    Start from videos
-                  </button>
-                  <button className="big" onClick={newProject} disabled={!s.connected}>
-                    Empty project
-                  </button>
-                </div>
+                <p className="muted">Your edits show up here. Start with the videos you want to edit, or an empty {ASPECTS.find((a) => a.id === aspect)!.label.toLowerCase()} canvas.</p>
               </div>
             )
           ) : (
@@ -274,7 +300,7 @@ export function Home() {
                         background: `radial-gradient(120% 90% at 20% 0%, hsl(${h} 70% 38% / 0.9), transparent 60%), linear-gradient(135deg, hsl(${(h + 40) % 360} 55% 22%), hsl(${(h + 90) % 360} 45% 12%))`,
                       }}
                     >
-                      <AspectFrame aspect={p.aspectRatio} />
+                      {p.thumbnailPath ? <img className="poster" src={`${fileUrl(p.thumbnailPath)}${fileUrl(p.thumbnailPath).includes("?") ? "&" : "?"}v=${p.updatedAt}`} alt="" draggable={false} /> : <AspectFrame aspect={p.aspectRatio} />}
                       <span className="duration">{duration(p.durationSeconds)}</span>
                       <button
                         className={`check ${isSelected ? "on" : ""}`}
@@ -348,32 +374,7 @@ export function Home() {
             </div>
           )}
         </main>
-        <aside>
-          <section className="side-card">
-            <h2>Inbox</h2>
-            {inbox.length === 0 ? (
-              <div className="muted small">{WEB ? "Videos you share to OpenEdits Studio from other apps land here, ready to edit." : <>Drop media into {path.join(WORKSPACE, "inbox")}.</>}</div>
-            ) : (
-              inbox.map((f) => (
-                <div className="list-row" key={f.path}>
-                  <span className={`kind-dot ${f.kind}`}>{f.kind === "video" ? "▶" : f.kind === "audio" ? "♪" : "▣"}</span>
-                  <span className="grow" title={f.name}>
-                    {f.name}
-                  </span>
-                  <button
-                    onClick={() =>
-                      void live.run("create_project", {
-                        files: [f.name],
-                        canvas: { aspectRatio: aspect },
-                      })
-                    }
-                  >
-                    Edit
-                  </button>
-                </div>
-              ))
-            )}
-          </section>
+        <aside className="home-extras">
           {showAutopilot && (
             <section className="side-card">
               <h2>Autopilot</h2>

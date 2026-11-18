@@ -23,6 +23,12 @@ import {
   setSpeed,
   setSpeedCurve,
   setTextAnimation,
+  setClipAnimation,
+  evaluateClipAnimation,
+  CLIP_ANIMATIONS,
+  TEXT_ANIMATIONS,
+  evaluateTextAnimation,
+  addSticker,
   sourceTimeAt,
   speedSegments,
   timelineTimeOfSource,
@@ -106,6 +112,69 @@ describe("scene evaluation", () => {
     expect(fading.opacity).toBeLessThan(1);
     expect((at(1.2).layers[1] as TextLayer).opacity).toBe(1);
     expect((at(1.75).layers[1] as TextLayer).reveal).toBeCloseTo(0.5);
+  });
+
+  it("animates clips in, out and through a combo", () => {
+    const { s, a } = setup();
+    s.transact("anim", "t", (ctx) => {
+      setClipAnimation(ctx, ctx.draft.elements[a], { in: { id: "slide_in_left", durationSeconds: 1 }, out: { id: "fade_out", durationSeconds: 1 } });
+    });
+    const el = s.state.elements[a] as VideoElement;
+    const at = (t: number) => evaluateScene(s.state, t, SIZE).layers[0] as MediaLayer;
+    const rest = at(3);
+    expect(rest.cx).toBeCloseTo(SIZE.width / 2);
+    expect(at(0).cx).toBeCloseTo(SIZE.width * 1.5); // starts one frame-width to the right
+    expect(at(0.5).cx).toBeGreaterThan(rest.cx);
+    expect(at(0.5).cx).toBeLessThan(SIZE.width * 1.5);
+    const end = el.start + el.duration;
+    expect(at(end - 0.5).opacity).toBeGreaterThan(0);
+    expect(at(end - 0.5).opacity).toBeLessThan(1);
+    // A blur-in adds a blur pass that fades away.
+    s.transact("blur", "t", (ctx) => setClipAnimation(ctx, ctx.draft.elements[a], { in: { id: "blur_in", durationSeconds: 1 } }));
+    expect(at(0.2).effects.some((e) => e.effectId === "blur")).toBe(true);
+    expect(at(1.5).effects.some((e) => e.effectId === "blur")).toBe(false);
+    // Ken Burns zooms slowly over the whole clip; "none" clears a slot.
+    s.transact("kb", "t", (ctx) => setClipAnimation(ctx, ctx.draft.elements[a], { in: { id: "none", durationSeconds: 1 }, out: { id: "none", durationSeconds: 1 }, loop: { id: "ken_burns", durationSeconds: 2 } }));
+    expect(at(end - 0.01).width).toBeGreaterThan(at(0.01).width * 1.1);
+    expect(s.state.elements[a]).toMatchObject({ animation: { loop: { id: "ken_burns" } } });
+    s.transact("clear", "t", (ctx) => setClipAnimation(ctx, ctx.draft.elements[a], { loop: { id: "none", durationSeconds: 1 } }));
+    expect((s.state.elements[a] as VideoElement).animation).toBeUndefined();
+  });
+
+  it("every clip and text animation moves something", () => {
+    for (const item of CLIP_ANIMATIONS) {
+      const slot = item.data.slot;
+      const anim = { [slot]: { id: item.id, durationSeconds: 1 } };
+      const t = slot === "in" ? 0.3 : slot === "out" ? 4.7 : 0.27;
+      const m = evaluateClipAnimation(anim, t, 5);
+      const moved = m.opacity !== 1 || m.dx !== 0 || m.dy !== 0 || m.scale !== 1 || m.rotation !== 0 || m.blur !== 0;
+      expect(moved, item.id).toBe(true);
+    }
+    const { s } = setup();
+    const text = s.transact("text", "t", (ctx) => addText(ctx, { text: "Hello there", start: 0, duration: 5 }).id).result;
+    for (const item of TEXT_ANIMATIONS) {
+      const slot = item.data.slot;
+      s.transact(item.id, "t", (ctx) => setTextAnimation(ctx, text, { [slot]: { id: item.id, durationSeconds: 1 } }));
+      const el = s.state.elements[text] as Parameters<typeof evaluateTextAnimation>[0];
+      const times = slot === "in" ? [0.3] : slot === "out" ? [4.7] : [0.27, 0.11, 0.43, 0.61, 0.83];
+      const moved = times.some((t) => {
+        const a = evaluateTextAnimation(el, t);
+        return a.opacity !== 1 || a.dx !== 0 || a.dy !== 0 || a.scale !== 1 || a.rotation !== 0 || a.blur !== 0 || a.reveal !== 1;
+      });
+      expect(moved, item.id).toBe(true);
+      s.transact("clear", "t", (ctx) => setTextAnimation(ctx, text, { [slot]: { id: "none", durationSeconds: 1 } }));
+    }
+  });
+
+  it("animates stickers", () => {
+    const { s } = setup();
+    const id = s.transact("sticker", "t", (ctx) => {
+      const el = addSticker(ctx, { stickerId: "star", start: 0, duration: 4 });
+      setClipAnimation(ctx, el, { in: { id: "pop_in", durationSeconds: 1 } });
+      return el.id;
+    }).result;
+    const layer = (t: number) => evaluateScene(s.state, t, SIZE).layers.find((l) => "elementId" in l && l.elementId === id) as { width: number };
+    expect(layer(0.1).width).toBeLessThan(layer(2).width);
   });
 
   it("emits a transition with both clips reaching into their handles", () => {

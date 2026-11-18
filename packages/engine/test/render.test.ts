@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { EFFECTS_CATALOG, TRANSITIONS_CATALOG, addMediaToTimeline, addShape, addText, addTransition, applyEffect, applyLut, setColorGrade, setOpacity, setReversed, setSpeed, setTransform, trimElement, type VideoElement } from "@openedits/core";
+import { EFFECTS_CATALOG, TRANSITIONS_CATALOG, addMediaToTimeline, addShape, addSticker, addText, addTransition, applyEffect, applyLut, setClipAnimation, setColorGrade, setOpacity, setReversed, setSpeed, setTransform, trimElement, type VideoElement } from "@openedits/core";
 import { EngineHost, fpsExpression, type RenderOutput } from "../src/index.js";
 import { counterLeftLevel, frameTime, level, readCounter, tempWorkspace, testMedia } from "./media.js";
 
@@ -117,6 +117,30 @@ describe("frame server", () => {
     const f = await capture(T);
     expect(f.warnings).toEqual([]);
     expect(level(f.path, "left")).toBeCloseTo(base, -1); // blurring a flat patch barely changes its middle
+    host.undo("t");
+  });
+
+  it("draws clip animations and full-color stickers", async () => {
+    const T = 1.5;
+    const still = await left(T);
+    // Slide in from the right: at the start the left of the frame is still the black background.
+    host.mutate("anim", "t", (c) => setClipAnimation(c, c.draft.elements[clip], { in: { id: "slide_in_left", durationSeconds: 1 } }));
+    const start = await capture(0.02);
+    expect(start.warnings).toEqual([]);
+    expect(level(start.path, "left")).toBeLessThan(5);
+    expect(await left(T)).toBeCloseTo(still, -1); // settled once the animation is over
+    host.undo("t");
+    // Blur in runs the blur pass without warnings.
+    host.mutate("blur", "t", (c) => setClipAnimation(c, c.draft.elements[clip], { in: { id: "blur_in", durationSeconds: 1 } }));
+    expect((await capture(0.3)).warnings).toEqual([]);
+    host.undo("t");
+    // A full-color sticker: the red heart fills the middle of the frame with red, not white.
+    host.mutate("sticker", "t", (c) => addSticker(c, { stickerId: "red_heart", start: 0, duration: 2, transform: { scale: 1 } }));
+    const heart = await capture(T);
+    expect(heart.warnings).toEqual([]);
+    const px = execFileSync("ffmpeg", ["-v", "error", "-i", heart.path, "-vf", "crop=8:8:156:86,scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]);
+    expect(px[0]).toBeGreaterThan(200);
+    expect(px[1]).toBeLessThan(90);
     host.undo("t");
   });
 
