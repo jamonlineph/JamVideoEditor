@@ -186,24 +186,26 @@ export const Viewport = forwardRef<ViewportApi>(function Viewport(_props, ref) {
             ⟲
           </button>
         </div>
-        <button className="icon ghost" title="Previous edit" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }))}>
-          ⏮
-        </button>
-        <button className="icon ghost" title="Back one frame" onClick={() => engine?.player.seek(u.playhead - 1 / project.canvas.fps)}>
-          ◀︎
-        </button>
-        <button className="icon" style={{ minWidth: 44 }} onClick={() => engine?.player.toggle()} title="Play / pause (Space)">
-          {u.playing ? "❚❚" : "▶"}
-        </button>
-        <button className="icon ghost" title="Forward one frame" onClick={() => engine?.player.seek(u.playhead + 1 / project.canvas.fps)}>
-          ▶︎
-        </button>
-        <button className="icon ghost" title="Next edit" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }))}>
-          ⏭
-        </button>
-        <span className="time">
-          {formatTime(u.playhead, project.canvas.fps)} / {formatTime(duration, project.canvas.fps)}
-        </span>
+        <div className="center">
+          <button className="icon ghost" title="Previous edit" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }))}>
+            ⏮
+          </button>
+          <button className="icon ghost" title="Back one frame" onClick={() => engine?.player.seek(u.playhead - 1 / project.canvas.fps)}>
+            ◀︎
+          </button>
+          <button className="icon play" onClick={() => engine?.player.toggle()} title="Play / pause (Space)">
+            {u.playing ? "❚❚" : "▶"}
+          </button>
+          <button className="icon ghost" title="Forward one frame" onClick={() => engine?.player.seek(u.playhead + 1 / project.canvas.fps)}>
+            ▶︎
+          </button>
+          <button className="icon ghost" title="Next edit" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }))}>
+            ⏭
+          </button>
+          <span className="time">
+            {formatTime(u.playhead, project.canvas.fps)} / {formatTime(duration, project.canvas.fps)}
+          </span>
+        </div>
         <div className="right">
           <span className="muted small">{scene ? `${scene.width}×${scene.height}` : ""}</span>
         </div>
