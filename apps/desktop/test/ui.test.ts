@@ -185,4 +185,40 @@ describe("desktop app", () => {
     expect(vo).toBeDefined();
     expect(vo!.start).toBeCloseTo(0.5, 2);
   }, 60_000);
+
+  it("searches bundled fonts and edits a title's style", async () => {
+    await app.call("newProject", { name: "Typography" });
+    const { elementId } = await app.call<{ elementId: string }>("addText", { text: "Hello Edits", start: 0, duration: 2 });
+    const titleId = JSON.stringify(elementId);
+    await app.call("setSelection", { elementIds: [elementId] });
+    await app.waitFor(`!!document.querySelector(".inspector .panel-list")`);
+    expect(await app.eval(clickButton("Style", ".panel-list"))).toBe(true);
+    await app.waitFor(`!!document.querySelector(".inspector .text-style-font-trigger")`);
+    await app.eval(`document.querySelector(".text-style-font-trigger").click()`);
+    await app.waitFor(`!!document.querySelector('[aria-label="Search fonts"]')`);
+    await app.eval(`(() => {
+      const search = document.querySelector('[aria-label="Search fonts"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(search, "bebas");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await app.waitFor(`document.querySelectorAll(".text-style-font-list button").length === 1`);
+    expect(await app.eval(`document.querySelector('.text-style-font-list button[aria-label="Bebas Neue"] .text-style-sample').textContent`)).toBe("Hello Edits");
+    await app.eval(`document.querySelector('.text-style-font-list button[aria-label="Bebas Neue"]').click()`);
+    await app.waitFor(`window.openedits.live.state.project.elements[${titleId}].style.fontFamily === "Bebas Neue"`);
+    expect(await app.eval<number>(`window.openedits.live.state.project.elements[${titleId}].style.fontWeight`)).toBe(400);
+    expect(await app.eval(`!!document.querySelector('.text-style-toggles button[disabled]')`)).toBe(true);
+
+    const before = await app.eval<number>("window.openedits.live.state.version");
+    await app.eval(`(() => {
+      const range = [...document.querySelectorAll('.text-style-control')].find((field) => field.querySelector('label')?.textContent === "Size (%)").querySelector('input[type="range"]');
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      for (const value of ["8", "9", "10"]) {
+        set.call(range, value);
+        range.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      range.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    })()`);
+    await app.waitFor(`window.openedits.live.state.project.elements[${titleId}].style.fontSizeNorm === 0.1`);
+    expect(await app.eval<number>("window.openedits.live.state.version")).toBe(before + 1);
+  });
 });

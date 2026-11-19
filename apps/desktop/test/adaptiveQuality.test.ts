@@ -22,6 +22,14 @@ describe("adaptive preview quality", () => {
     expect(quality.shortSide).toBe(630);
   });
 
+  it("lowers Auto earlier when repeated frames take twice their budget", () => {
+    const quality = new AdaptivePreviewQuality();
+    for (let i = 0; i < 3; i++) quality.observe(80, 33, true);
+    expect(quality.shortSide).toBe(720);
+    quality.observe(80, 33, true);
+    expect(quality.shortSide).toBe(540);
+  });
+
   it("honors a manual size and a viewport smaller than Draft", () => {
     const quality = new AdaptivePreviewQuality();
     quality.configure(1080, false);

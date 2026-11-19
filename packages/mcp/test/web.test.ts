@@ -49,6 +49,24 @@ describe("browser mode", () => {
     expect((await fetch(`${base}/../../package.json`)).status).toBe(404);
   });
 
+  it("serves the bundled fonts to both the editor and web render host", async () => {
+    const editor = await fetch(`${base}/`, { headers: { cookie } });
+    const renderHost = await fetch(`${base}/render-host.html`);
+    expect(await editor.text()).toContain('href="fonts/fonts.css"');
+    expect(await renderHost.text()).toContain('href="fonts/fonts.css"');
+    const stylesheet = await (await fetch(`${base}/fonts/fonts.css`)).text();
+    const assets = Array.from(stylesheet.matchAll(/url\("\.\/([^"]+)"\)/g), ([, asset]) => asset);
+    expect(assets).toContain("bebas-neue.woff2");
+    expect(assets).toContain("inter-italic.woff2");
+    expect(assets).toContain("source-serif-4.woff2");
+    expect(assets).toContain("ibm-plex-mono-700.woff2");
+    for (const asset of assets) {
+      const font = await fetch(`${base}/fonts/${asset}`);
+      expect(font.headers.get("content-type")).toBe("font/woff2");
+      expect(Buffer.from(await font.arrayBuffer()).subarray(0, 4).toString()).toBe("wOF2");
+    }
+  });
+
   it("rejects other sites and other hosts even with the cookie", async () => {
     expect((await fetch(`${base}/web/config.js`)).status).toBe(401);
     expect((await fetch(`${base}/web/config.js`, { headers: { cookie } })).status).toBe(200);

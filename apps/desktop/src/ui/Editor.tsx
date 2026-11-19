@@ -273,7 +273,7 @@ export function Editor() {
           <aside id="editor-library" className="editor-library" aria-label="Library" hidden={!libraryOpen}>
             {libraryOpen && <Dock onClose={() => showPanel("library", false)} />}
           </aside>
-          <Viewport ref={viewport} onOpenLibrary={() => {
+          <Viewport ref={viewport} onOpenEditingCache={() => setCacheOpen(true)} onOpenLibrary={() => {
             openTool("media");
             libraryToggle.current?.focus();
           }} />

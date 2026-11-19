@@ -142,7 +142,16 @@ export const TEXT_ANIMATIONS: CatalogItem<{ slot: "in" | "out" | "loop"; default
   data: { slot, defaultDurationSeconds: slot === "loop" ? 1 : 0.4 },
 }));
 
-export const FONTS: CatalogItem<{ family: string; weights: number[]; builtIn: boolean }>[] = [
+type FontCatalogData = { family: string; weights: number[]; builtIn: boolean; italic?: boolean };
+
+const BUNDLED_FONTS: [string, string, number[], boolean][] = [
+  ["Bebas Neue", "display", [400], false],
+  ["Inter", "sans", [100, 200, 300, 400, 500, 600, 700, 800, 900], true],
+  ["Source Serif 4", "serif", [200, 300, 400, 500, 600, 700, 800, 900], true],
+  ["IBM Plex Mono", "mono", [400, 500, 600, 700], true],
+];
+
+const SYSTEM_FONTS: [string, string, number[]][] = [
   ["Helvetica Neue", "sans", [300, 400, 500, 700, 900]],
   ["Avenir Next", "sans", [400, 500, 600, 700, 800, 900]],
   ["Futura", "sans", [500, 700, 800, 900]],
@@ -159,11 +168,13 @@ export const FONTS: CatalogItem<{ family: string; weights: number[]; builtIn: bo
   ["Chalkboard SE", "handwritten", [300, 400, 700]],
   ["Noteworthy", "handwritten", [300, 700]],
   ["Rockwell", "slab", [400, 700]],
-].map(([family, category, weights]) => ({
-  id: String(family).toLowerCase().replace(/\s+/g, "_"),
-  name: family as string,
-  category: category as string,
-  data: { family: family as string, weights: weights as number[], builtIn: true },
+];
+
+export const FONTS: CatalogItem<FontCatalogData>[] = [...BUNDLED_FONTS, ...SYSTEM_FONTS].map(([family, category, weights, italic]) => ({
+  id: family.toLowerCase().replace(/\s+/g, "_"),
+  name: family,
+  category,
+  data: { family, weights, builtIn: italic !== undefined, italic },
 }));
 
 /** Look-alike fonts that ship with Windows and common Linux desktops, per catalog font. */
@@ -184,6 +195,10 @@ const FONT_FALLBACKS: Record<string, string[]> = {
   "Chalkboard SE": ["Comic Sans MS", "Segoe Print", "Comic Neue"],
   Noteworthy: ["Segoe Print", "Comic Sans MS", "Comic Neue"],
   Rockwell: ["Rockwell Nova", "Roboto Slab", "Zilla Slab", "Georgia"],
+  "Bebas Neue": ["Impact", "Arial Narrow", "Inter"],
+  Inter: ["Arial", "Liberation Sans"],
+  "Source Serif 4": ["Georgia", "Liberation Serif"],
+  "IBM Plex Mono": ["Courier New", "Liberation Mono"],
 };
 
 const GENERIC: Record<string, string> = { sans: "sans-serif", display: "sans-serif", serif: "serif", mono: "monospace", slab: "serif", handwritten: "cursive" };

@@ -2,21 +2,17 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { ipcRenderer } from "electron";
 import {
   ADJUST_PRESETS,
-  CAPTION_STYLES,
   COLOR_GRADE_KEYS,
   EFFECTS_CATALOG,
   FILTERS_CATALOG,
-  FONTS,
   HSL_BANDS,
   LUTS_CATALOG,
   SPEED_PRESETS,
   TEXT_ANIMATIONS,
-  TEXT_PRESETS,
   TOOL_PANELS,
   TRANSITIONS_CATALOG,
   WHEELS,
   evaluateKeyframes,
-  fontStack,
   mainTrack,
   type Element,
   type KeyframeProperty,
@@ -26,6 +22,7 @@ import { live, selectedElements, useFeatures, useLive, type Features } from "./l
 import { ui, useUi, capturePointer, seek } from "./uiStore.js";
 import { PreviewTile } from "./PreviewTile.js";
 import { EditorIcon } from "./EditorIcon.js";
+import { TextStylePanel } from "./TextStylePanel.js";
 import type { PreviewKind } from "./thumbs.js";
 
 type Args = Record<string, unknown>;
@@ -157,8 +154,11 @@ export function Inspector() {
   if (sel.length > 1) return <MultiPanel project={project} ids={sel.map((e) => e.id)} />;
 
   const el = sel[0];
-  const panels = TOOL_PANELS.filter((p) => p.data.appliesTo.includes(el.type));
-  const panel = panels.find((p) => p.id === activePanel) ?? panels[0];
+  const styleAliases = ["textFont", "textPreset", "captionStyle"];
+  const panels = TOOL_PANELS.filter((p) => p.data.appliesTo.includes(el.type) && !styleAliases.includes(p.id));
+  const defaultPanel = el.type === "text" || el.type === "caption" ? "textStyle" : panels[0]?.id;
+  const requestedPanel = activePanel ?? s.appState?.activeTool ?? defaultPanel;
+  const panel = panels.find((p) => p.id === (styleAliases.includes(requestedPanel) ? "textStyle" : requestedPanel)) ?? panels.find((p) => p.id === defaultPanel) ?? panels[0];
   const onMain = mainTrack(project).elementIds.includes(el.id);
   return (
     <div className="inspector">
@@ -175,7 +175,7 @@ export function Inspector() {
       <div className="panel-list">
         {panels.map((p) => (
           <button key={p.id} className={p.id === panel.id ? "on" : ""} aria-pressed={p.id === panel.id} onClick={() => ui.set({ panel: p.id })}>
-            {p.name}
+            {p.id === "textStyle" ? "Style" : p.name}
           </button>
         ))}
       </div>
@@ -312,6 +312,8 @@ function Unavailable({ features, need }: { features: Features | null; need: keyo
 
 function MultiPanel({ project, ids }: { project: Project; ids: string[] }) {
   const media = ids.filter((id) => ["video", "image"].includes(project.elements[id]?.type));
+  const selectedCaption = project.elements[ids[0]];
+  const allSelectedAreCaptions = selectedCaption?.type === "caption" && ids.every((id) => project.elements[id]?.type === "caption");
   return (
     <div className="inspector">
       <div className="head">
@@ -319,6 +321,7 @@ function MultiPanel({ project, ids }: { project: Project; ids: string[] }) {
         <div style={{ fontWeight: 600, marginTop: 2 }}>{ids.length} items</div>
       </div>
       <div className="pane">
+        {allSelectedAreCaptions && <TextStylePanel element={selectedCaption} selectedIds={ids} captionIds={Object.values(project.elements).filter((item) => item.type === "caption").map((item) => item.id)} />}
         <div className="row" style={{ flexWrap: "wrap" }}>
           <button onClick={() => run("splitAt", { times: [ui.get().playhead], elementIds: ids })}>Split at playhead</button>
           {media.length === 2 && <button onClick={() => run("splitScreen", { elementIds: media })}>Split screen</button>}
@@ -671,43 +674,9 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     case "textEdit":
       if (el.type !== "text") return null;
       return <TextEdit key={el.id} text={el.text} onCommit={(text) => call("editText", { text })} />;
-    case "textStyle": {
+    case "textStyle":
       if (el.type !== "text" && el.type !== "caption") return null;
-      const st = el.type === "text" ? el.style : { ...(CAPTION_STYLES.find((c) => c.id === el.styleId)?.data.style ?? {}), ...el.styleOverrides };
-      const set = (patch: Args) => (el.type === "text" ? call("setTextStyle", patch) : run("setCaptionStyle", { styleId: el.styleId, elementIds: [elementId], overrides: patch }));
-      return (
-        <>
-          <Slider reset={0.06} label="Size" value={st.fontSizeNorm ?? 0.06} min={0.01} max={0.3} step={0.002} format={(v) => `${Math.round(v * 1000) / 10}%`} onCommit={(v) => set({ fontSizeNorm: v })} />
-          <ColorField label="Color" value={st.color} onChange={(v) => set({ color: v })} />
-          <ColorField label="Stroke" value={st.strokeColor} onChange={(v) => set({ strokeColor: v, strokeWidth: st.strokeWidth || 0.08 })} />
-          <Slider label="Stroke width" value={st.strokeWidth ?? 0} min={0} max={0.3} step={0.005} onCommit={(v) => set({ strokeWidth: v })} />
-          <ColorField label="Background" value={st.backgroundColor} onChange={(v) => set({ backgroundColor: v })} />
-          <ColorField label="Shadow" value={st.shadowColor} onChange={(v) => set({ shadowColor: v, shadowBlur: st.shadowBlur || 0.1 })} />
-          <Select label="Align" value={st.align ?? "center"} options={["left", "center", "right"]} onChange={(v) => set({ align: v })} />
-          <Slider reset={1.15} label="Line height" value={st.lineHeight ?? 1.2} min={0.6} max={2.5} step={0.05} onCommit={(v) => set({ lineHeight: v })} />
-          <Slider label="Letter spacing" value={st.letterSpacing ?? 0} min={-0.2} max={1} step={0.01} onCommit={(v) => set({ letterSpacing: v })} />
-          <Toggle label="Uppercase" value={!!st.uppercase} onChange={(v) => set({ uppercase: v })} />
-        </>
-      );
-    }
-    case "textFont": {
-      if (el.type !== "text" && el.type !== "caption") return null;
-      const family = el.type === "text" ? el.style.fontFamily : el.styleOverrides.fontFamily ?? CAPTION_STYLES.find((c) => c.id === el.styleId)?.data.style.fontFamily;
-      return (
-        <div className="tiles">
-          {FONTS.map((f) => (
-            <div
-              key={f.id}
-              className={`tile${family === f.data.family ? " active" : ""}`}
-              onClick={() => (el.type === "text" ? call("setTextFont", { fontFamily: f.data.family }) : run("setCaptionStyle", { styleId: el.styleId, elementIds: [elementId], overrides: { fontFamily: f.data.family } }))}
-            >
-              <span style={{ fontFamily: fontStack(f.data.family), fontSize: 16 }}>Aa</span>
-              <span className="label">{f.name}</span>
-            </div>
-          ))}
-        </div>
-      );
-    }
+      return <TextStylePanel element={el} captionIds={el.type === "caption" ? Object.values(project.elements).filter((item) => item.type === "caption").map((item) => item.id) : []} />;
     case "textAnimation": {
       if (el.type !== "text") return null;
       return (
@@ -724,9 +693,6 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
         </>
       );
     }
-    case "textPreset":
-      if (el.type !== "text") return null;
-      return <Tiles items={TEXT_PRESETS} active={el.presetId} onPick={(p) => call("applyTextPreset", { presetId: p })} />;
     case "textToSpeech":
       if (el.type !== "text") return null;
       return (
@@ -738,14 +704,6 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     case "captionsTranscript":
       if (el.type !== "caption") return null;
       return <CaptionWords el={el} />;
-    case "captionStyle":
-      if (el.type !== "caption") return null;
-      return (
-        <>
-          <ColorField label="Highlight" value={el.highlightColor} onChange={(v) => run("setCaptionHighlightColor", { color: v })} />
-          <Tiles items={CAPTION_STYLES} active={el.styleId} onPick={(styleId) => run("setCaptionStyle", { styleId })} />
-        </>
-      );
     default:
       return <div className="muted small">No controls for this panel.</div>;
   }

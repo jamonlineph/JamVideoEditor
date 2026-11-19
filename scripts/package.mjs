@@ -30,6 +30,14 @@ for (const f of ["main.cjs", "page.js", "page.html"]) copy(`packages/render-host
 // The same UI for a browser, served by the engine in `serve --web` (the openedits-web command on Linux).
 for (const f of ["index.html", "app.js", "styles.css", "manifest.webmanifest", "icon-192.png", "icon-512.png", "render-host.html", "render-host.js"]) copy(`apps/desktop/dist/web/${f}`, `web/${f}`);
 
+for (const [source, target] of [
+  ["apps/desktop/dist", "desktop"],
+  ["packages/render-host/dist", "render-host"],
+  ["apps/desktop/dist/web", "web"],
+]) {
+  fs.cpSync(path.join(root, source, "fonts"), path.join(stage, target, "fonts"), { recursive: true });
+}
+
 // The engine (HTTP + MCP server, CLI) as one ES module.
 await bundleEngine(path.join(stage, "engine", "cli.mjs"));
 

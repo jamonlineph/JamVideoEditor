@@ -8,6 +8,7 @@ export class AdaptivePreviewQuality {
   private automatic = true;
   private samples = 0;
   private misses = 0;
+  private consecutiveOverruns = 0;
   private stable = 0;
 
   get shortSide() {
@@ -26,6 +27,7 @@ export class AdaptivePreviewQuality {
   resetSamples() {
     this.samples = 0;
     this.misses = 0;
+    this.consecutiveOverruns = 0;
     this.stable = 0;
   }
 
@@ -35,12 +37,14 @@ export class AdaptivePreviewQuality {
     const late = skipped || renderMs > deadlineMs * 1.1;
     this.samples++;
     if (late) this.misses++;
+    this.consecutiveOverruns = renderMs >= deadlineMs * 2 ? this.consecutiveOverruns + 1 : 0;
     this.stable = !late && renderMs < deadlineMs * 0.7 ? this.stable + 1 : 0;
 
-    if (this.samples >= 16) {
-      const reduce = this.misses >= 8 && this.current > floor;
+    if (this.samples >= 16 || this.consecutiveOverruns >= 4) {
+      const reduce = (this.misses >= 8 || this.consecutiveOverruns >= 4) && this.current > floor;
       this.samples = 0;
       this.misses = 0;
+      this.consecutiveOverruns = 0;
       if (reduce) {
         this.current = Math.max(floor, Math.floor(this.current * 0.8 / STEP) * STEP);
         this.resetSamples();

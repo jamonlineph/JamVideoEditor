@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { TextStyle } from "@openedits/core";
 
 /** View state that only this window cares about (not shared with agents). */
 export interface UiState {
@@ -12,9 +13,10 @@ export interface UiState {
   previewQuality: "auto" | "draft" | "high";
   recorder: boolean;
   exportOpen: boolean;
+  textStyleDraft: { elementIds: string[]; patch: Partial<TextStyle>; highlightColor?: string } | null;
 }
 
-let state: UiState = { playhead: 0, playing: false, loop: false, pxPerSecond: 60, dockTab: "media", panel: null, showGuides: false, previewQuality: "auto", recorder: false, exportOpen: false };
+let state: UiState = { playhead: 0, playing: false, loop: false, pxPerSecond: 60, dockTab: "media", panel: null, showGuides: false, previewQuality: "auto", recorder: false, exportOpen: false, textStyleDraft: null };
 const listeners = new Set<() => void>();
 
 export const ui = {

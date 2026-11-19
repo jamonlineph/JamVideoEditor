@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { ipcRenderer } from "electron";
 import { evaluateScene, sceneMediaLayers, type RenderContext } from "@openedits/core";
-import { Compositor } from "@openedits/renderer";
+import { Compositor, loadSceneFonts } from "@openedits/renderer";
 import { MediaManager } from "./media.js";
 
 const canvas = document.createElement("canvas");
@@ -19,7 +19,7 @@ const media = new MediaManager(compositor);
 
 async function renderScene(ctx: RenderContext, time: number, width: number, height: number): Promise<string[]> {
   const scene = evaluateScene(ctx.project, time, { width, height }, { hideCaptions: ctx.hideCaptions });
-  const warnings = await media.prepare(sceneMediaLayers(scene));
+  const [warnings] = await Promise.all([media.prepare(sceneMediaLayers(scene)), loadSceneFonts(scene)]);
   return [...warnings, ...compositor.render(scene, media)];
 }
 
