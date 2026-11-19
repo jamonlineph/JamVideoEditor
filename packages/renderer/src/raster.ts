@@ -1,4 +1,4 @@
-import { fontStack, type CaptionLayer, type ShapeLayer, type StickerLayer, type TextLayer, type TextStyle } from "@openedits/core";
+import { fontStack, isVisibleHexColor, type CaptionLayer, type ShapeLayer, type StickerLayer, type TextLayer, type TextStyle } from "@openedits/core";
 
 export interface Raster {
   canvas: OffscreenCanvas;
@@ -70,10 +70,13 @@ function drawSegments(segments: Segment[], style: TextStyle, fontPx: number, max
 
   const maxScale = Math.max(1, ...segments.map((s) => s.scale));
   const lineHeight = fontPx * style.lineHeight * maxScale;
-  const hasBoxes = !!style.backgroundColor || segments.some((s) => s.background);
+  const backgroundColor = isVisibleHexColor(style.backgroundColor) ? style.backgroundColor : undefined;
+  const strokeColor = isVisibleHexColor(style.strokeColor) ? style.strokeColor : undefined;
+  const shadowColor = isVisibleHexColor(style.shadowColor) ? style.shadowColor : undefined;
+  const hasBoxes = !!backgroundColor || segments.some((s) => s.background);
   const bgPad = hasBoxes ? fontPx * style.backgroundPadding : 0;
-  const strokePx = style.strokeColor ? style.strokeWidth * fontPx : 0;
-  const shadowPx = style.shadowColor ? (style.shadowBlur * 2 + Math.max(Math.abs(style.shadowOffsetX), Math.abs(style.shadowOffsetY))) * fontPx : 0;
+  const strokePx = strokeColor ? style.strokeWidth * fontPx : 0;
+  const shadowPx = shadowColor ? (style.shadowBlur * 2 + Math.max(Math.abs(style.shadowOffsetX), Math.abs(style.shadowOffsetY))) * fontPx : 0;
   const margin = Math.ceil(bgPad + strokePx + shadowPx + fontPx * 0.2 + 2);
   const blockWidth = Math.max(1, ...lines.map((l) => l.width));
   const width = Math.ceil(blockWidth + margin * 2);
@@ -91,8 +94,8 @@ function drawSegments(segments: Segment[], style: TextStyle, fontPx: number, max
   lines.forEach((line, i) => {
     const visible = line.words.some((w) => w.segs.some((s) => !s.hidden));
     const top = margin + i * lineHeight;
-    if (style.backgroundColor && visible && line.width > 0) {
-      ctx.fillStyle = style.backgroundColor;
+    if (backgroundColor && visible && line.width > 0) {
+      ctx.fillStyle = backgroundColor;
       roundedRect(ctx, lineX(line) - bgPad, top - bgPad * 0.35, line.width + bgPad * 2, lineHeight + bgPad * 0.7, radiusFor(lineHeight + bgPad * 0.7));
       ctx.fill();
     }
@@ -120,14 +123,14 @@ function drawSegments(segments: Segment[], style: TextStyle, fontPx: number, max
         if (!seg.hidden && seg.text) {
           ctx.font = fontString(style, fontPx * seg.scale, seg.fontWeight);
           setSpacing(ctx, spacing);
-          if (style.shadowColor) {
-            ctx.shadowColor = style.shadowColor;
+          if (shadowColor) {
+            ctx.shadowColor = shadowColor;
             ctx.shadowBlur = style.shadowBlur * fontPx;
             ctx.shadowOffsetX = style.shadowOffsetX * fontPx;
             ctx.shadowOffsetY = style.shadowOffsetY * fontPx;
           }
-          if (strokePx > 0) {
-            ctx.strokeStyle = style.strokeColor!;
+          if (strokeColor && strokePx > 0) {
+            ctx.strokeStyle = strokeColor;
             ctx.lineWidth = strokePx * 2;
             ctx.strokeText(seg.text, x, mid);
             ctx.shadowColor = "transparent";

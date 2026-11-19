@@ -24,7 +24,7 @@ fs.rmSync(path.join(app, "engine", "cli.mjs.map"), { force: true });
 // Source maps stay out of the APK.
 const web = path.join(root, "apps", "desktop", "dist", "web");
 fs.mkdirSync(path.join(app, "web"), { recursive: true });
-for (const f of fs.readdirSync(web)) if (!f.endsWith(".map")) fs.copyFileSync(path.join(web, f), path.join(app, "web", f));
+for (const f of fs.readdirSync(web)) if (!f.endsWith(".map")) fs.cpSync(path.join(web, f), path.join(app, "web", f), { recursive: true });
 
 const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
 fs.writeFileSync(path.join(app, "VERSION"), `${version}\n`);

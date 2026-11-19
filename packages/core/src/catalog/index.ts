@@ -33,7 +33,7 @@ export const CATALOG = {
   textPresets: { description: "Text style presets (applyTextPreset)", items: TEXT_PRESETS },
   captionStyles: { description: "Animated caption styles (setCaptionStyle)", items: CAPTION_STYLES },
   textAnimations: { description: "Text in/out/loop animations (setTextAnimation)", items: TEXT_ANIMATIONS },
-  fonts: { description: "Built-in font families (setTextFont)", items: FONTS },
+  fonts: { description: "Bundled and system font families (setTextFont)", items: FONTS },
   filters: { description: "Color filter looks (applyFilter)", items: FILTERS_CATALOG },
   adjustPresets: { description: "One-tap adjust presets (setColorGrade preset)", items: ADJUST_PRESETS },
   luts: { description: "Camera log to Rec.709 LUTs (applyLUT)", items: LUTS_CATALOG },

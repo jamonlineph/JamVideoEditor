@@ -3,7 +3,8 @@ import { buildAudioPlan, type Project } from "@openedits/core";
 import { fileUrl, live, WEB } from "./live.js";
 
 const WINDOW_SECONDS = 4;
-const STARTUP_WAIT_MS = 1500;
+const STARTUP_WAIT_MS = 120;
+const CACHED_WINDOWS = 4;
 
 type AudioWindow = { buffer: AudioBuffer; source?: AudioBufferSourceNode };
 type AudioSession = {
@@ -11,8 +12,10 @@ type AudioSession = {
   signature: string;
   end: number;
   abort: AbortController;
+  active: boolean;
   origin: number | null;
   windows: Map<number, AudioWindow | null>;
+  request?: { start: number; task: Promise<void> };
 };
 
 const windowStart = (time: number) => Math.floor(time / WINDOW_SECONDS) * WINDOW_SECONDS;
@@ -21,28 +24,52 @@ const windowStart = (time: number) => Math.floor(time / WINDOW_SECONDS) * WINDOW
 export class PlaybackAudio {
   private context: AudioContext | null = null;
   private session: AudioSession | null = null;
-  private firstWindow: AudioBuffer | null = null;
-  private request: Promise<void> | null = null;
+  private cacheSignature: string | undefined;
+  private buffers = new Map<number, AudioBuffer>();
 
   configure(project: Project, end: number) {
+    this.setMix(project, end);
+    if (!this.session) return;
+    this.session.active = true;
+    void this.context?.resume().catch(() => {});
+  }
+
+  warm(project: Project, end: number, time: number) {
+    this.setMix(project, end);
+    if (this.context?.state === "running") void this.context.suspend().catch(() => {});
+    void this.load(windowStart(time));
+  }
+
+  private setMix(project: Project, end: number) {
     const plan = buildAudioPlan(project);
-    const signature = JSON.stringify(plan);
-    if (this.session?.projectId === project.id && this.session.signature === signature && this.session.end === end) return;
+    const signature = JSON.stringify([project.id, end, plan]);
+    if (this.session?.signature === signature) return;
     this.stop();
+    if (this.cacheSignature !== signature) {
+      this.buffers.clear();
+      this.cacheSignature = signature;
+    }
     if (!plan.length) return;
     try {
       this.context ??= new AudioContext({ sampleRate: 48_000 });
-      void this.context.resume().catch(() => {});
     } catch {
       return;
     }
-    this.session = { projectId: project.id, signature, end, abort: new AbortController(), origin: null, windows: new Map() };
+    this.session = { projectId: project.id, signature, end, abort: new AbortController(), active: false, origin: null, windows: new Map() };
   }
 
   async prime(time: number) {
-    const pending = this.load(windowStart(time));
+    const start = windowStart(time);
+    const session = this.session;
+    if (session?.request && session.request.start !== start) {
+      // A seek can move Play away from the window prepared while paused.
+      session.abort.abort();
+      session.abort = new AbortController();
+      session.request = undefined;
+    }
+    const pending = this.load(start);
     if (!pending) return;
-    // Give the first window a short head start. A slow disk/codec must not freeze the picture.
+    // Briefly wait for the initial mix. Late windows join at the current audio-clock offset.
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([pending, new Promise<void>((resolve) => { timer = setTimeout(resolve, STARTUP_WAIT_MS); })]);
@@ -89,9 +116,18 @@ export class PlaybackAudio {
   private load(start: number) {
     const session = this.session;
     const context = this.context;
-    if (!session || !context || this.request || start >= session.end || session.windows.has(start)) return;
+    if (!session || !context || start >= session.end || session.windows.has(start)) return;
+    const cached = this.buffers.get(start);
+    if (cached) {
+      // Keep the starting window and the most recently used windows for quick restarts.
+      this.buffers.delete(start);
+      this.buffers.set(start, cached);
+      session.windows.set(start, { buffer: cached });
+      return;
+    }
+    if (session.request) return session.request.start === start ? session.request.task : undefined;
     const signal = session.abort.signal;
-    this.request = (async () => {
+    const task = (async () => {
       try {
         const result = await live.call<{ path: string; projectId: string }>("previewAudio", { startSeconds: start, durationSeconds: WINDOW_SECONDS });
         if (signal.aborted || result.projectId !== session.projectId) return;
@@ -107,29 +143,32 @@ export class PlaybackAudio {
         const buffer = await context.decodeAudioData(data);
         if (signal.aborted) return;
         session.windows.set(start, { buffer });
-        if (start === 0) this.firstWindow = buffer;
+        this.buffers.set(start, buffer);
+        if (this.buffers.size > CACHED_WINDOWS) {
+          const oldest = [...this.buffers.keys()].find((window) => window !== 0);
+          if (oldest !== undefined) this.buffers.delete(oldest);
+        }
       } catch {
         // A failed window stays silent for this play pass.
-        if (!signal.aborted) session.windows.set(start, null);
+        if (!signal.aborted && session.active) session.windows.set(start, null);
       } finally {
-        this.request = null;
+        if (!signal.aborted) session.request = undefined;
       }
     })();
-    return this.request;
+    session.request = { start, task };
+    return task;
   }
 
   rewind() {
     const session = this.session;
     if (!session) return;
     this.clearWindows(session);
-    if (this.firstWindow) session.windows.set(0, { buffer: this.firstWindow });
-    this.session = { ...session, abort: new AbortController(), origin: null };
+    this.session = { ...session, abort: new AbortController(), origin: null, windows: new Map(), request: undefined };
   }
 
   stop() {
     if (this.session) this.clearWindows(this.session);
     this.session = null;
-    this.firstWindow = null;
     void this.context?.suspend().catch(() => {});
   }
 
@@ -141,6 +180,7 @@ export class PlaybackAudio {
 
   dispose() {
     this.stop();
+    this.buffers.clear();
     void this.context?.close().catch(() => {});
     this.context = null;
   }

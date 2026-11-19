@@ -9,6 +9,7 @@ import {
   editText,
   getCatalogItem,
   mergeCaptions,
+  resetTextStyle,
   setCaptionHighlightColor,
   setCaptionHighlights,
   setCaptionStyle,
@@ -69,11 +70,18 @@ export const textTools = [
     name: "setTextStyle",
     title: "Set text style",
     category: "text",
-    description: "Change style fields of a text element (or caption overrides): fontSizeNorm (fraction of canvas short side), color, strokeColor/strokeWidth, shadow*, backgroundColor/backgroundPadding/backgroundCornerRadius, align, lineHeight, letterSpacing, uppercase, underline, maxWidthNorm.",
-    input: TextStyleSchema.partial().extend({ elementId: z.string().optional(), expectedVersion }),
-    handler: ({ elementId, expectedVersion: ev, ...patch }, ctx) => {
-      const id = resolveElementId(ctx, elementId);
-      return mutate(ctx, "Text style", (c) => setTextStyle(c, id, patch as Partial<TextStyle>), { expectedVersion: ev });
+    description: "Change style fields of text elements or caption overrides. Pass elementIds for one edit across a selection, or reset to restore each element's current preset or default style.",
+    input: TextStyleSchema.partial().extend({ elementId: z.string().optional(), elementIds: z.array(z.string()).min(1).optional(), reset: z.boolean().optional(), expectedVersion }),
+    handler: ({ elementId, elementIds, reset, expectedVersion: ev, ...patch }, ctx) => {
+      if (elementId && elementIds) throw new EditError("INVALID_ARGUMENT", "Pass elementId or elementIds");
+      if (reset && Object.keys(patch).length) throw new EditError("INVALID_ARGUMENT", "Reset takes no style fields");
+      const ids = elementIds ? [...new Set(elementIds)] : [resolveElementId(ctx, elementId)];
+      return mutate(ctx, reset ? "Reset text style" : "Text style", (c) => {
+        for (const id of ids) {
+          if (reset) resetTextStyle(c, id);
+          else setTextStyle(c, id, patch as Partial<TextStyle>);
+        }
+      }, { expectedVersion: ev });
     },
   }),
   defineTool({
@@ -107,15 +115,16 @@ export const textTools = [
     title: "Apply text preset",
     category: "text",
     description: "Apply one of the 34 text presets (listCatalog kind textPresets) to a text element.",
-    input: z.object({ elementId: z.string().optional(), presetId: z.string(), expectedVersion }),
+    input: z.object({ elementId: z.string().optional(), presetId: z.string(), replaceStyle: z.boolean().optional().describe("Replace the full style with the preset's defaults."), expectedVersion }),
     handler: (a, ctx) => {
       const item = getCatalogItem("textPresets", a.presetId);
       const id = resolveElementId(ctx, a.elementId);
       return mutate(ctx, `Text preset ${item.name}`, (c) => {
         const el = c.draft.elements[id];
         if (!el || el.type !== "text") throw new EditError("INVALID_ELEMENT_TYPE", `${id} is not a text element`);
-        setTextStyle(c, id, (item.data as { style: Partial<TextStyle> }).style);
         el.presetId = a.presetId;
+        if (a.replaceStyle) resetTextStyle(c, id);
+        else setTextStyle(c, id, (item.data as { style: Partial<TextStyle> }).style);
       }, { expectedVersion: a.expectedVersion });
     },
   }),
@@ -203,12 +212,13 @@ export const textTools = [
     title: "Set caption style",
     category: "text",
     description: "Apply one of the 39 caption styles (listCatalog kind captionStyles) to captions (default: all), with optional style overrides.",
-    input: z.object({ styleId: z.string(), elementIds: z.array(z.string()).optional(), overrides: TextStyleSchema.partial().optional(), expectedVersion }),
+    input: z.object({ styleId: z.string(), elementIds: z.array(z.string()).optional(), overrides: TextStyleSchema.partial().optional(), usePresetHighlight: z.boolean().optional(), expectedVersion }),
     handler: (a, ctx) => {
       const style = getCatalogItem("captionStyles", a.styleId);
       const ids = captionIds(ctx, a.elementIds);
       if (!ids.length) throw new EditError("INVALID_ARGUMENT", "There are no captions to style");
-      return mutate(ctx, `Caption style ${style.name}`, (c) => setCaptionStyle(c, ids, a.styleId, a.overrides as Partial<TextStyle> | undefined), { expectedVersion: a.expectedVersion }, () => ({ styled: ids.length }));
+      const highlight = a.usePresetHighlight ? (style.data as { highlightColor: string }).highlightColor : undefined;
+      return mutate(ctx, `Caption style ${style.name}`, (c) => setCaptionStyle(c, ids, a.styleId, a.overrides as Partial<TextStyle> | undefined, highlight), { expectedVersion: a.expectedVersion }, () => ({ styled: ids.length }));
     },
   }),
   defineTool({

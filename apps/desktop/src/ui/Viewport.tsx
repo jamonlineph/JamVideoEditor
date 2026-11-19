@@ -1,10 +1,11 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { produce } from "immer";
-import { clipBoundaries, compositionDuration, type DrawLayer, type Element, type Project } from "@openedits/core";
+import { canvasShortSide, clipBoundaries, compositionDuration, type DrawLayer, type Element, type Project } from "@openedits/core";
 import { useEditingCache } from "./editingCache.js";
+import { EditorIcon } from "./EditorIcon.js";
 import { live, useLive, WEB } from "./live.js";
 import { Player, Preview } from "./preview.js";
-import { formatTime, ui, useUi, capturePointer } from "./uiStore.js";
+import { formatTime, ui, useUi, capturePointer, type UiState } from "./uiStore.js";
 import { recorder } from "./recorder.js";
 
 export interface ViewportApi {
@@ -25,7 +26,21 @@ function layerBox(l: DrawLayer): { cx: number; cy: number; w: number; h: number;
   return { cx: l.cx, cy: l.cy, w: l.width, h: l.height, rot: l.rotationDegrees };
 }
 
-export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(function Viewport({ onOpenLibrary }, ref) {
+function withTextStyleDraft(project: Project, draft: UiState["textStyleDraft"]): Project {
+  if (!draft) return project;
+  return produce(project, (copy) => {
+    for (const id of draft.elementIds) {
+      const element = copy.elements[id];
+      if (element?.type === "text") Object.assign(element.style, draft.patch);
+      if (element?.type === "caption") {
+        Object.assign(element.styleOverrides, draft.patch);
+        if (draft.highlightColor !== undefined) element.highlightColor = draft.highlightColor;
+      }
+    }
+  });
+}
+
+export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void; onOpenEditingCache: () => void }>(function Viewport({ onOpenLibrary, onOpenEditingCache }, ref) {
   const s = useLive();
   const playing = useUi("playing");
   const loop = useUi("loop");
@@ -33,6 +48,8 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
   const showRecorder = useUi("recorder");
   const quality = useUi("previewQuality");
   const project = s.project!;
+  const textStyleDraft = useUi("textStyleDraft");
+  const previewProject = useMemo(() => withTextStyleDraft(project, textStyleDraft), [project, textStyleDraft]);
   const cache = useEditingCache();
   const proxies = cache.enabled && cache.projectId === project.id ? cache.proxies : undefined;
   const wrap = useRef<HTMLDivElement>(null);
@@ -60,7 +77,10 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     let previous = ui.get();
     const unsubscribe = ui.subscribe(() => {
       const next = ui.get();
-      if (!next.playing && (next.playhead !== previous.playhead || previous.playing)) void preview.draw(next.playhead);
+      if (!next.playing && (next.playhead !== previous.playhead || previous.playing)) {
+        void preview.draw(next.playhead, "seek");
+        player.warmPausedAudio();
+      }
       previous = next;
     });
     setEngine({ preview, player });
@@ -71,6 +91,9 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     };
   }, []);
   useImperativeHandle(ref, () => ({ player: engine?.player ?? null }), [engine]);
+  useEffect(() => {
+    if (!ui.get().playing) engine?.player.warmPausedAudio();
+  }, [engine, project, s.connected]);
 
   // Fit the canvas into the viewport, preserving the project aspect ratio.
   useEffect(() => {
@@ -88,14 +111,14 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
   }, [project.canvas.aspectRatio]);
 
   const maxShortSide = quality === "draft" ? 360 : quality === "high" || !WEB ? 1080 : 720;
-  const shortSide = Math.max(180, Math.min(maxShortSide, Math.round(Math.min(box.w, box.h) * Math.min(2, devicePixelRatio) / 90) * 90));
+  const shortSide = Math.max(180, Math.min(maxShortSide, canvasShortSide(project.canvas), Math.round(Math.min(box.w, box.h) * Math.min(2, devicePixelRatio) / 90) * 90));
   useLayoutEffect(() => {
     if (!engine) return;
     engine.preview.quality.configure(shortSide, quality === "auto");
     engine.preview.androidMediaCodec = androidMediaCodec;
-    engine.preview.setProject(dragProject.current ?? project, proxies);
+    engine.preview.setProject(dragProject.current ?? previewProject, proxies);
     if (!ui.get().playing) void engine.preview.draw(ui.get().playhead);
-  }, [engine, project, shortSide, quality, proxies, androidMediaCodec]);
+  }, [engine, previewProject, shortSide, quality, proxies, androidMediaCodec]);
 
   const scene = engine?.preview.scene;
   const scale = scene ? box.w / scene.width : 1;
@@ -138,7 +161,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     if (!drag || !engine) return;
     const patch = nextTransform(drag, e);
     // Live preview of the drag on a local copy; the engine gets one edit on release.
-    dragProject.current = produce(project, (p) => {
+    dragProject.current = produce(previewProject, (p) => {
       const target = p.elements[drag.elementId];
       if (target && "transform" in target) Object.assign(target.transform, patch);
     });
@@ -150,7 +173,8 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     dragProject.current = null;
     setDrag(null);
     if (engine) {
-      engine.preview.setProject(live.state.project, proxies);
+      const latest = live.state.project;
+      engine.preview.setProject(latest && withTextStyleDraft(latest, ui.get().textStyleDraft), proxies);
       if (!ui.get().playing) void engine.preview.draw(ui.get().playhead);
     }
   };
@@ -188,6 +212,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
 
   const duration = compositionDuration(project);
   const b = layer ? layerBox(layer) : null;
+  const reducedQuality = quality === "auto" && drawnShortSide > 0 && drawnShortSide < shortSide;
   function jumpToEdit(direction: -1 | 1) {
     const time = ui.get().playhead;
     const edges = clipBoundaries(project);
@@ -198,21 +223,27 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     <section className="stage" aria-label="Preview">
       <div className="preview-bar">
         <strong>Preview</strong>
-        {ANDROID_PREVIEW && <label title="Experimental Android hardware preview decoding. Unsupported clips fall back to software.">
-          <input type="checkbox" checked={androidMediaCodec} onChange={(e) => setAndroidMediaCodec(e.target.checked)} />
-          <span className="muted">Try MediaCodec</span>
-        </label>}
-        <label>
-          <span className="muted">Quality</span>
-          <select aria-label="Preview quality" title="Affects preview playback only" value={quality} onChange={(e) => {
-            const value = e.target.value;
-            if (value === "auto" || value === "draft" || value === "high") ui.set({ previewQuality: value });
-          }}>
-            <option value="auto">{quality === "auto" && drawnShortSide > 0 && drawnShortSide < shortSide ? `Auto · ${drawnShortSide}p` : "Auto"}</option>
-            <option value="draft">Draft</option>
-            <option value="high">High</option>
-          </select>
-        </label>
+        <div className="preview-controls">
+          {ANDROID_PREVIEW && <label title="Experimental Android hardware preview decoding. Unsupported clips fall back to software.">
+            <input type="checkbox" checked={androidMediaCodec} onChange={(e) => setAndroidMediaCodec(e.target.checked)} />
+            <span className="muted">Try MediaCodec</span>
+          </label>}
+          <label>
+            <span className="muted preview-quality-label">Quality</span>
+            <select aria-label="Preview quality" title={reducedQuality ? "Auto lowered the preview resolution to keep playback smooth" : "Affects preview playback only"} value={quality} onChange={(e) => {
+              const value = e.target.value;
+              if (value === "auto" || value === "draft" || value === "high") ui.set({ previewQuality: value });
+            }}>
+              <option value="auto">{reducedQuality ? `Auto · ${drawnShortSide}p` : "Auto"}</option>
+              <option value="draft">Draft</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <button className="ghost icon preview-proxies" aria-label="Editing proxies" aria-haspopup="dialog" title="Manage smaller video copies for smoother playback" onClick={onOpenEditingCache}>
+            <EditorIcon name="storage" />
+            <span>Proxies</span>
+          </button>
+        </div>
       </div>
       <div className="viewport" ref={wrap} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={clearDrag}>
         <canvas ref={canvasRef} className="preview" style={{ width: box.w, height: box.h }} onMouseDown={pick} />

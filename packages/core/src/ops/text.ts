@@ -18,6 +18,7 @@ import { attachToTrack, findOrCreateLane } from "../timeline/tracks.js";
 import type { EditContext } from "./context.js";
 import { placeFreeElement } from "./arrange.js";
 import { plainClone } from "./elements.js";
+import { CAPTION_STYLES, TEXT_PRESETS } from "../catalog/text.js";
 
 export interface AddTextOptions {
   text: string;
@@ -71,6 +72,20 @@ export function setTextStyle(ctx: EditContext, id: string, patch: Partial<TextSt
     el.style = TextStyleSchema.parse({ ...el.style, ...patch });
   } else if (el.type === "caption") {
     el.styleOverrides = { ...el.styleOverrides, ...patch };
+  } else throw new EditError("INVALID_ELEMENT_TYPE", `Element ${id} (${el.type}) has no text style`);
+  ctx.touch(id);
+}
+
+/** Restore a title or caption to its current preset, or to the default text style. */
+export function resetTextStyle(ctx: EditContext, id: string) {
+  const el = requireElement(ctx.draft, id);
+  assertUnlocked(ctx.draft, el);
+  if (el.type === "text") {
+    el.style = defaultTextStyle(TEXT_PRESETS.find((preset) => preset.id === el.presetId)?.data.style);
+  } else if (el.type === "caption") {
+    el.styleOverrides = {};
+    const preset = CAPTION_STYLES.find((style) => style.id === el.styleId);
+    if (preset) el.highlightColor = preset.data.highlightColor;
   } else throw new EditError("INVALID_ELEMENT_TYPE", `Element ${id} (${el.type}) has no text style`);
   ctx.touch(id);
 }
@@ -242,12 +257,13 @@ export function mergeCaptions(ctx: EditContext, ids: string[]): CaptionElement {
   return first;
 }
 
-export function setCaptionStyle(ctx: EditContext, ids: string[], styleId: string, overrides?: Partial<TextStyle>) {
+export function setCaptionStyle(ctx: EditContext, ids: string[], styleId: string, overrides?: Partial<TextStyle>, highlightColor?: string) {
   for (const id of ids) {
     const el = requireCaption(ctx, id);
     el.styleId = styleId;
     if (overrides) el.styleOverrides = { ...overrides };
     else el.styleOverrides = {};
+    if (highlightColor) el.highlightColor = highlightColor;
     ctx.touch(id);
   }
 }

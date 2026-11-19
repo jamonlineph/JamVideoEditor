@@ -75,6 +75,12 @@ await build({
 fs.copyFileSync(path.join(host, "src/web/page.html"), path.join(webOut, "render-host.html"));
 for (const f of ["index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png"]) fs.copyFileSync(path.join(web, f), path.join(webOut, f));
 
+// All preview and export pages use the same local font faces, including offline.
+const fonts = path.join(root, "packages/renderer/fonts");
+for (const output of [path.join(host, "dist"), path.join(desktop, "dist"), webOut]) {
+  fs.cpSync(fonts, path.join(output, "fonts"), { recursive: true });
+}
+
 // Apple Vision helper (macOS only): rebuild when the Swift source is newer than the binary.
 if (process.platform === "darwin") {
   const src = path.join(root, "packages/engine/native/vision.swift");

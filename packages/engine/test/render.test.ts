@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { EFFECTS_CATALOG, TRANSITIONS_CATALOG, addMediaToTimeline, addShape, addText, addTransition, applyEffect, applyLut, setColorGrade, setOpacity, setReversed, setSpeed, setTransform, trimElement, type VideoElement } from "@openedits/core";
+import { EFFECTS_CATALOG, TRANSITIONS_CATALOG, addMediaToTimeline, addShape, addText, addTransition, applyEffect, applyLut, setColorGrade, setOpacity, setReversed, setSpeed, setTextStyle, setTransform, trimElement, type VideoElement } from "@openedits/core";
 import { EngineHost, fpsExpression, type RenderOutput } from "../src/index.js";
 import { counterLeftLevel, frameTime, level, readCounter, tempWorkspace, testMedia } from "./media.js";
 
@@ -177,6 +177,21 @@ describe("frame server", () => {
     }
     expect(dead).toEqual([]);
     host.undo("t");
+  });
+
+  it("uses the bundled face on the first frame with text", async () => {
+    const elementId = host.mutate("title", "t", (c) => addText(c, {
+      text: "FIRST FRAME OF A TITLE",
+      start: 2,
+      duration: 1,
+      style: { fontFamily: "Bebas Neue", fontWeight: 400, fontSizeNorm: 0.12 },
+    }).id).result;
+    const first = fs.readFileSync((await capture(2.1)).path);
+    const later = fs.readFileSync((await capture(2.2)).path);
+    expect(first.equals(later)).toBe(true);
+    host.mutate("change font", "t", (c) => setTextStyle(c, elementId, { fontFamily: "Helvetica Neue" }));
+    const changed = fs.readFileSync((await capture(2.2)).path);
+    expect(first.equals(changed)).toBe(false);
   });
 
   it("renders text over video and a labelled frame sheet", async () => {

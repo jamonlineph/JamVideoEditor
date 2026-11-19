@@ -11,6 +11,11 @@ export function isHexColor(value: string): boolean {
   return HEX_RE.test(value);
 }
 
+/** True when a stored hex color is present and has a nonzero alpha channel. */
+export function isVisibleHexColor(value: HexColor | undefined): value is HexColor {
+  return !!value && (value.length !== 9 || !value.endsWith("00"));
+}
+
 export interface Rgba {
   r: number;
   g: number;

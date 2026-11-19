@@ -82,6 +82,42 @@ describe("MCP tool surface", () => {
     expect(e2.error.code).toBe("PROJECT_NOT_FOUND");
   });
 
+  it("composes caption edits in scope and replaces or resets presets in one undo step", async () => {
+    const { projectId } = await call("newProject", { name: "Styling" });
+    const { elementId: title } = await call("addText", { text: "Title", start: 0, duration: 2, presetId: "label_black" });
+    const { elementIds: [first, second] } = await call("addCaptions", {
+      styleId: "clean",
+      segments: [
+        { start: 0, end: 1, words: [{ text: "First", start: 0, end: 1 }] },
+        { start: 1, end: 2, words: [{ text: "Second", start: 1, end: 2 }] },
+      ],
+    });
+    await call("setTextStyle", { elementIds: [first], fontSizeNorm: 0.08, color: "#ABCDEF" });
+    const before = host.session.version;
+    await call("setTextStyle", { elementIds: [first, second], fontFamily: "Bebas Neue", fontWeight: 400 });
+    expect(host.session.version).toBe(before + 1);
+    expect(host.project.elements[first]).toMatchObject({ styleOverrides: { fontFamily: "Bebas Neue", fontSizeNorm: 0.08, color: "#ABCDEF" } });
+    expect(host.project.elements[second]).toMatchObject({ styleOverrides: { fontFamily: "Bebas Neue", fontWeight: 400 } });
+    await call("undo");
+    expect(host.project.elements[first]).toMatchObject({ styleOverrides: { fontSizeNorm: 0.08, color: "#ABCDEF" } });
+    expect(host.project.elements[second]).toMatchObject({ styleOverrides: {} });
+
+    await call("setCaptionStyle", { elementIds: [first], styleId: "bold", usePresetHighlight: true });
+    expect(host.project.elements[first]).toMatchObject({ styleId: "bold", styleOverrides: {}, highlightColor: "#FFE14D" });
+    expect(host.project.elements[second]).toMatchObject({ styleId: "clean" });
+    await call("setTextStyle", { elementIds: [first], color: "#ABCDEF" });
+    await call("setCaptionHighlightColor", { elementIds: [first], color: "#123456" });
+    await call("setTextStyle", { elementIds: [first], reset: true });
+    expect(host.project.elements[first]).toMatchObject({ styleId: "bold", styleOverrides: {}, highlightColor: "#FFE14D" });
+
+    await call("applyTextPreset", { elementId: title, presetId: "classic", replaceStyle: true });
+    expect((host.project.elements[title] as { style: Record<string, unknown> }).style).not.toHaveProperty("backgroundColor");
+    await call("setTextStyle", { elementIds: [title], fontFamily: "Bebas Neue" });
+    await call("setTextStyle", { elementIds: [title], reset: true });
+    expect(host.project.elements[title]).toMatchObject({ presetId: "classic", style: { fontFamily: "Helvetica Neue" } });
+    await call("deleteProject", { projectId });
+  });
+
   it("drives every tool through a full editing session", { timeout: 300_000 }, async () => {
     const m = testMedia();
     fs.copyFileSync(m.clipA, path.join(host.paths.inbox, "talk.mp4"));
