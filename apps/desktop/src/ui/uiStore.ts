@@ -6,7 +6,7 @@ export interface UiState {
   playing: boolean;
   loop: boolean;
   pxPerSecond: number;
-  dockTab: "media" | "audio" | "text" | "effects";
+  dockTab: "media" | "audio" | "text" | "captions" | "effects" | "transitions" | "filters" | "luts" | "stickers";
   panel: string | null;
   showGuides: boolean;
   previewQuality: "auto" | "draft" | "high";

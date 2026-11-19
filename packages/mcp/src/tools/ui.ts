@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { EditError } from "@openedits/core";
-import { decodePcm, renderAudioMix, speechAvailable, visionAvailable, whisperAvailable, writeWav } from "@openedits/engine";
+import { buildAudioPlan, compositionDuration, EditError } from "@openedits/core";
+import { decodePcm, MIX_SAMPLE_RATE, renderAudioMix, speechAvailable, visionAvailable, whisperAvailable, writeWav } from "@openedits/engine";
 import { defineTool } from "../defineTool.js";
 import { round } from "./common.js";
 
@@ -15,21 +15,34 @@ export const uiTools = [
     name: "previewAudio",
     title: "Preview audio",
     category: "audio",
-    description: "Render the timeline's audio mix (volumes, fades, ducking, speed) to a WAV for playback, cached per project version. Returns the file path.",
-    input: z.object({}),
+    description: "Render the timeline's audio mix (volumes, fades, ducking, speed) to a cached WAV. Omit the range for the whole timeline.",
+    input: z.object({ startSeconds: z.number().min(0).optional(), durationSeconds: z.number().positive().max(8).optional() }),
     readOnly: true,
-    handler: async (_a, ctx) => {
+    handler: async (a, ctx) => {
       const host = ctx.host;
       const dir = path.join(host.projectDirPath, "cache", "playback");
       fs.mkdirSync(dir, { recursive: true });
       const { project } = host;
       const { version } = host.session;
-      const key = `${host.projectId}-${version}`;
-      const file = path.join(dir, `mix-${key}.wav`);
+      const windowed = a.startSeconds !== undefined || a.durationSeconds !== undefined;
+      const end = compositionDuration(project);
+      const startSeconds = Math.min(end, Math.round((a.startSeconds ?? 0) * MIX_SAMPLE_RATE) / MIX_SAMPLE_RATE);
+      const endSeconds = windowed ? Math.min(end, startSeconds + (a.durationSeconds ?? 4)) : end;
+      const plan = buildAudioPlan(project);
+      const files = [...new Set(plan.map((clip) => clip.path))].map((source) => {
+        const stat = fs.statSync(source, { throwIfNoEntry: false });
+        return [source, stat?.size, stat?.mtimeMs];
+      });
+      const key = createHash("sha256").update(JSON.stringify([plan, files, startSeconds, endSeconds])).digest("hex");
+      const prefix = windowed ? "window-" : "mix-";
+      const file = path.join(dir, `${prefix}${key}.wav`);
       if (!fs.existsSync(file)) {
         let pending = playbackMixes.get(file);
         if (!pending) {
-          pending = renderAudioMix(project).then((mix) => {
+          pending = renderAudioMix(project, {
+            startSeconds, endSeconds, playbackWindow: windowed,
+            ...(windowed ? { concurrency: 2 } : {}),
+          }).then((mix) => {
             const tmp = `${file}.part`;
             try {
               writeWav(tmp, mix.samples, mix.sampleRate, 2);
@@ -37,18 +50,21 @@ export const uiTools = [
             } finally {
               fs.rmSync(tmp, { force: true });
             }
-            // Keep the new mix and the three most recent previous mixes.
-            const old = fs.readdirSync(dir).filter((f) => f.startsWith("mix-") && f.endsWith(".wav"))
+            // Bound the on-disk window cache independently of legacy full-timeline mixes.
+            const old = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith(".wav"))
               .map((f) => path.join(dir, f)).filter((f) => f !== file)
-              .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs).slice(3);
+              .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs).slice(windowed ? 23 : 3);
             for (const f of old) fs.rmSync(f, { force: true });
           }).finally(() => playbackMixes.delete(file));
           playbackMixes.set(file, pending);
         }
         await pending;
+      } else {
+        const now = new Date();
+        fs.utimesSync(file, now, now);
       }
-      const seconds = (fs.statSync(file).size - 44) / (48000 * 2 * 4);
-      return { path: file, version, durationSeconds: round(seconds, 3) };
+      const seconds = (fs.statSync(file).size - 44) / (MIX_SAMPLE_RATE * 2 * 4);
+      return { path: file, projectId: project.id, version, startSeconds, durationSeconds: round(seconds, 3) };
     },
   }),
   defineTool({

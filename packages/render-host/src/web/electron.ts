@@ -25,6 +25,7 @@ function connect() {
   };
   // The engine restarted or replaced this page: start over with a fresh page (and a fresh compositor).
   socket.onclose = () => {
+    for (const h of handlers) h(null, { method: "disconnect" });
     document.title = "OpenEdits render host (reconnecting)";
     setTimeout(() => location.reload(), 1500);
   };

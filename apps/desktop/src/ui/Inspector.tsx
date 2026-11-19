@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ipcRenderer } from "electron";
 import {
   ADJUST_PRESETS,
@@ -25,6 +25,7 @@ import {
 import { live, selectedElements, useFeatures, useLive, type Features } from "./live.js";
 import { ui, useUi, capturePointer, seek } from "./uiStore.js";
 import { PreviewTile } from "./PreviewTile.js";
+import { EditorIcon } from "./EditorIcon.js";
 import type { PreviewKind } from "./thumbs.js";
 
 type Args = Record<string, unknown>;
@@ -166,14 +167,14 @@ export function Inspector() {
           {el.type}
           {onMain ? " · main track" : ""}
         </div>
-        <div style={{ fontWeight: 600, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{el.name ?? (el.type === "text" ? el.text : el.id)}</div>
+        <div className="inspector-selection-name">{el.name ?? (el.type === "text" ? el.text : "mediaId" in el ? project.media[el.mediaId]?.name ?? el.type : el.type)}</div>
         <div className="muted small">
           {el.start.toFixed(2)}s → {(el.start + el.duration).toFixed(2)}s ({el.duration.toFixed(2)}s)
         </div>
       </div>
       <div className="panel-list">
         {panels.map((p) => (
-          <button key={p.id} className={p.id === panel.id ? "on" : ""} onClick={() => ui.set({ panel: p.id })}>
+          <button key={p.id} className={p.id === panel.id ? "on" : ""} aria-pressed={p.id === panel.id} onClick={() => ui.set({ panel: p.id })}>
             {p.name}
           </button>
         ))}
@@ -186,21 +187,43 @@ export function Inspector() {
 }
 
 function SelectedPanel(props: Omit<Parameters<typeof PanelBody>[0], "playhead">) {
-  const playhead = useUi("playhead");
-  return <PanelBody {...props} playhead={playhead} />;
+  const { el, id } = props;
+  // Subscribe to visible changes only. Actions that use a timestamp read it when clicked.
+  useSyncExternalStore(ui.subscribe, () => {
+    const { playhead } = ui.get();
+    if (id === "split") return playhead > el.start && playhead < el.start + el.duration;
+    if (id === "keyframeEasing" && Object.values(el.keyframes ?? {}).some((frames) => frames?.length)) return Math.round((playhead - el.start) * 100);
+    if (id === "opacity" && "opacity" in el && el.keyframes?.opacity?.length) return Math.round(propAt(el, "opacity", el.opacity, playhead) * 100);
+    if (id === "transform" && "transform" in el) {
+      const { x, y, scale, rotationDegrees } = el.transform;
+      return [
+        el.keyframes?.x?.length ? Math.round(propAt(el, "x", x, playhead) * 100) : 0,
+        el.keyframes?.y?.length ? Math.round(propAt(el, "y", y, playhead) * 100) : 0,
+        el.keyframes?.scale?.length ? Math.round(propAt(el, "scale", scale, playhead) * 100) : 0,
+        el.keyframes?.rotationDegrees?.length ? Math.round(propAt(el, "rotationDegrees", rotationDegrees, playhead)) : 0,
+      ].join(",");
+    }
+    return null;
+  });
+  return <PanelBody {...props} playhead={ui.get().playhead} />;
 }
 
 function ProjectPanel({ project }: { project: Project }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [brief, setBrief] = useState(project.brief);
   useEffect(() => setBrief(project.brief), [project.brief]);
   return (
     <div className="inspector">
       <div className="head">
-        <div className="kind">Project</div>
-        <div style={{ fontWeight: 600, marginTop: 2 }}>{project.name}</div>
-        <div className="muted small">Select a clip to edit it.</div>
+        <div className="inspector-heading"><EditorIcon name="inspector" /> Inspector</div>
       </div>
+      {!settingsOpen ? <div className="inspector-empty">
+        <EditorIcon name="timeline" />
+        <strong>Select a clip</strong>
+        <button className="ghost" onClick={() => setSettingsOpen(true)}>Project settings</button>
+      </div> : <>
       <div className="pane">
+        <button className="ghost inspector-back" onClick={() => setSettingsOpen(false)}><EditorIcon name="back" /> Project settings</button>
         <Title>Canvas</Title>
         <Select label="Aspect" value={project.canvas.aspectRatio} options={["9:16", "16:9", "1:1", "4:5"]} onChange={(v) => run("setCanvas", { aspectRatio: v })} />
         <Select label="Resolution" value={project.canvas.resolution} options={["720p", "1080p", "4K"]} onChange={(v) => run("setCanvas", { resolution: v })} />
@@ -216,6 +239,7 @@ function ProjectPanel({ project }: { project: Project }) {
         <textarea rows={5} style={{ width: "100%" }} placeholder="What this video is for (agents read this)" value={brief} onChange={(e) => setBrief(e.target.value)} onBlur={() => brief !== project.brief && run("setBrief", { brief })} />
         <TranscriptActions />
       </div>
+      </>}
     </div>
   );
 }
@@ -310,8 +334,11 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
   const noVision = !!features && !features.vision;
   const elementId = el.id;
   const call = (tool: string, args: Args = {}) => run(tool, { elementId, ...args });
-  const kfAt = (prop: KeyframeProperty) => (el.keyframes?.[prop]?.length ? playhead : undefined);
-  const addKf = (prop: KeyframeProperty, value: number) => () => call("setTransformKeyframe", { property: prop, time: playhead, value });
+  const isKeyframed = (prop: KeyframeProperty) => Boolean(el.keyframes?.[prop]?.length);
+  const addKf = (prop: KeyframeProperty, fallback: number) => () => {
+    const time = ui.get().playhead;
+    call("setTransformKeyframe", { property: prop, time, value: propAt(el, prop, fallback, time) });
+  };
 
   switch (id) {
     case "transform": {
@@ -321,13 +348,13 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       const y = propAt(el, "y", t.y, playhead);
       const sc = propAt(el, "scale", t.scale, playhead);
       const rot = propAt(el, "rotationDegrees", t.rotationDegrees, playhead);
-      const set = (prop: KeyframeProperty, v: number) => call("setTransform", { [prop]: v, ...(kfAt(prop) !== undefined ? { time: playhead } : {}) });
+      const set = (prop: KeyframeProperty, v: number) => call("setTransform", { [prop]: v, ...(isKeyframed(prop) ? { time: ui.get().playhead } : {}) });
       return (
         <>
-          <Slider reset={0.5} label="Position X" value={x} min={-0.5} max={1.5} onCommit={(v) => set("x", v)} keyframed={!!el.keyframes?.x?.length} onKeyframe={addKf("x", x)} />
-          <Slider reset={0.5} label="Position Y" value={y} min={-0.5} max={1.5} onCommit={(v) => set("y", v)} keyframed={!!el.keyframes?.y?.length} onKeyframe={addKf("y", y)} />
-          <Slider reset={1} label="Scale" value={sc} min={0.05} max={5} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => set("scale", v)} keyframed={!!el.keyframes?.scale?.length} onKeyframe={addKf("scale", sc)} />
-          <Slider label="Rotation" value={rot} min={-180} max={180} step={1} format={(v) => `${Math.round(v)}°`} onCommit={(v) => set("rotationDegrees", v)} keyframed={!!el.keyframes?.rotationDegrees?.length} onKeyframe={addKf("rotationDegrees", rot)} />
+          <Slider reset={0.5} label="Position X" value={x} min={-0.5} max={1.5} onCommit={(v) => set("x", v)} keyframed={isKeyframed("x")} onKeyframe={addKf("x", t.x)} />
+          <Slider reset={0.5} label="Position Y" value={y} min={-0.5} max={1.5} onCommit={(v) => set("y", v)} keyframed={isKeyframed("y")} onKeyframe={addKf("y", t.y)} />
+          <Slider reset={1} label="Scale" value={sc} min={0.05} max={5} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => set("scale", v)} keyframed={isKeyframed("scale")} onKeyframe={addKf("scale", t.scale)} />
+          <Slider label="Rotation" value={rot} min={-180} max={180} step={1} format={(v) => `${Math.round(v)}°`} onCommit={(v) => set("rotationDegrees", v)} keyframed={isKeyframed("rotationDegrees")} onKeyframe={addKf("rotationDegrees", t.rotationDegrees)} />
           {(el.type === "video" || el.type === "image") && <Select label="Fit" value={t.fit} options={["cover", "contain"]} onChange={(v) => call("setTransform", { fit: v })} />}
           {el.type === "text" && (
             <div className="row" style={{ flexWrap: "wrap", marginTop: 8 }}>
@@ -390,7 +417,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
     case "opacity": {
       if (!("opacity" in el)) return null;
       const o = propAt(el, "opacity", el.opacity, playhead);
-      return <Slider reset={1} label="Opacity" value={o} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => (kfAt("opacity") !== undefined ? call("setTransformKeyframe", { property: "opacity", time: playhead, value: v }) : call("setOpacity", { opacity: v }))} keyframed={!!el.keyframes?.opacity?.length} onKeyframe={addKf("opacity", o)} />;
+      return <Slider reset={1} label="Opacity" value={o} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onCommit={(v) => (isKeyframed("opacity") ? call("setTransformKeyframe", { property: "opacity", time: ui.get().playhead, value: v }) : call("setOpacity", { opacity: v }))} keyframed={isKeyframed("opacity")} onKeyframe={addKf("opacity", el.opacity)} />;
     }
     case "blend":
       if (!("blendMode" in el)) return null;
@@ -454,7 +481,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       );
     case "split":
       return (
-        <button className="primary" onClick={() => call("split", { time: playhead })} disabled={playhead <= el.start || playhead >= el.start + el.duration}>
+        <button className="primary" onClick={() => call("split", { time: ui.get().playhead })} disabled={playhead <= el.start || playhead >= el.start + el.duration}>
           Split at playhead
         </button>
       );
@@ -525,7 +552,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
             Detect beats
           </button>
           <Select label="Density" value={project.beatDensity} options={["off", "lowest", "low", "medium", "high", "extreme"]} onChange={(v) => run("setBeatDensity", { density: v })} />
-          <button onClick={() => run("addBeatMarker", { time: playhead })}>Add marker at playhead</button>
+          <button onClick={() => run("addBeatMarker", { time: ui.get().playhead })}>Add marker at playhead</button>
           <div className="muted small" style={{ marginTop: 6 }}>
             {project.beatMarkers.length} markers
           </div>
@@ -618,10 +645,10 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
           <Unavailable features={features} need="vision" />
           <div className="muted small">Lift the person or subject at the playhead into a sticker, or track it for the rest of the clip.</div>
           <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <button className="primary" disabled={noVision} onClick={() => call("addStickerFromCutout", { time: playhead, kind: "person" })}>
+            <button className="primary" disabled={noVision} onClick={() => call("addStickerFromCutout", { time: ui.get().playhead, kind: "person" })}>
               Cut out person
             </button>
-            <button disabled={noVision} onClick={() => call("addStickerFromCutout", { time: playhead, kind: "subject" })}>Cut out subject</button>
+            <button disabled={noVision} onClick={() => call("addStickerFromCutout", { time: ui.get().playhead, kind: "subject" })}>Cut out subject</button>
             <button disabled={noVision} onClick={() => call("trackObject", { target: "person" })}>Track person</button>
           </div>
         </>

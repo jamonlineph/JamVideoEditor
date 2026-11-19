@@ -1,11 +1,14 @@
 import fs from "node:fs";
-import { buildAudioPlan, compositionDuration, evaluateScene, renderContextFor, renderSizeFor, sceneMediaLayers, type Project, type Scene } from "@openedits/core";
+import { compositionDuration, evaluateScene, renderContextFor, renderSizeFor, sceneMediaLayers, type Project, type Scene } from "@openedits/core";
 import { Compositor } from "@openedits/renderer";
 import { MediaManager } from "@openedits/render-host/media";
-import { fileUrl, live } from "./live.js";
+import { AdaptivePreviewQuality } from "./adaptiveQuality.js";
+import { live } from "./live.js";
+import { PlaybackAudio } from "./playbackAudio.js";
 import { ui } from "./uiStore.js";
 
 const FFMPEG = process.env.OPENEDITS_FFMPEG ?? ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].find((p) => fs.existsSync(p)) ?? "ffmpeg";
+type EditingProxies = Record<string, { path: string; width: number; height: number }>;
 
 /**
  * Live preview: the same scene evaluation and WebGL2 compositor the exporter uses, so what you see
@@ -18,19 +21,24 @@ export class Preview {
   private busy = false;
   private queued: number | null = null;
   private preparedProject: Project | null = null;
+  private proxies?: EditingProxies;
+  private preparedProxies?: EditingProxies;
+  androidMediaCodec = false;
   private disposed = false;
   private errorReported = false;
+  private lastPlaybackFrame: { projectId: string; time: number } | undefined;
   scene: Scene | null = null;
-  shortSide = 720;
+  readonly quality = new AdaptivePreviewQuality();
   onDrawn?: (scene: Scene) => void;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.compositor = new Compositor(canvas);
-    this.media = new MediaManager(this.compositor, { downsizeReaders: true });
+    this.media = new MediaManager(this.compositor, { downsizeReaders: true, readerMemoryBytes: 96 * 1024 * 1024 });
   }
 
-  setProject(p: Project | null) {
+  setProject(p: Project | null, proxies?: EditingProxies) {
     this.project = p;
+    this.proxies = proxies;
   }
 
   /** Draw the frame at `time`; returns when it is on screen (or skipped in favor of a newer request). */
@@ -41,19 +49,33 @@ export class Preview {
       return;
     }
     this.busy = true;
+    const started = performance.now();
+    const playing = ui.get().playing;
     try {
       const project = this.project;
-      const size = renderSizeFor(project, this.shortSide);
-      if (project !== this.preparedProject) {
-        this.media.use(renderContextFor(project, { ffmpeg: FFMPEG }).ctx);
+      const size = renderSizeFor(project, this.quality.shortSide);
+      this.media.setAndroidMediaCodec(this.androidMediaCodec);
+      if (project !== this.preparedProject || this.proxies !== this.preparedProxies) {
+        this.media.use(renderContextFor(project, { ffmpeg: FFMPEG, editingProxies: this.proxies }).ctx);
         this.preparedProject = project;
+        this.preparedProxies = this.proxies;
       }
       const scene = evaluateScene(project, time, size);
-      await this.media.prepare(sceneMediaLayers(scene));
+      await this.media.prepare(sceneMediaLayers(scene), Math.max(size.width, size.height));
       if (this.disposed) return;
       this.compositor.render(scene, this.media);
       this.compositor.present();
       this.scene = scene;
+      if (playing && ui.get().playing && project === this.project) {
+        const previous = this.lastPlaybackFrame;
+        const skipped = (previous?.projectId === project.id && (time - previous.time) * project.canvas.fps > 1.5)
+          || (this.queued !== null && (this.queued - time) * project.canvas.fps > 1.5);
+        this.quality.observe(performance.now() - started, 1000 / project.canvas.fps, skipped);
+        this.lastPlaybackFrame = { projectId: project.id, time };
+      } else {
+        this.lastPlaybackFrame = undefined;
+        this.quality.resetSamples();
+      }
       this.onDrawn?.(scene);
       this.errorReported = false;
     } catch (error) {
@@ -89,53 +111,21 @@ export class Preview {
  * sound), otherwise wall-clock time.
  */
 export class Player {
-  private audio = new Audio();
+  private audio = new PlaybackAudio();
   private raf = 0;
   private startWall = 0;
   private startTime = 0;
-  private mixVersion = -1;
-  private mixPath = "";
-  private mixRequest: { version: number; promise: Promise<{ path: string; version: number } | null> } | undefined;
   private generation = 0;
   private seekTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private preview: Preview) {
-    this.audio.preload = "auto";
-  }
-
-  private async prepareAudio(generation: number, project: Project, version: number) {
-    if (version === this.mixVersion) return;
-    if (buildAudioPlan(project).length === 0) {
-      this.mixVersion = version;
-      this.mixPath = "";
-      return;
-    }
-    if (this.mixRequest?.version !== version) {
-      this.mixRequest = { version, promise: live.call<{ path: string; version: number }>("previewAudio").catch(() => null) };
-    }
-    const request = this.mixRequest;
-    const r = await request.promise;
-    if (this.mixRequest === request) this.mixRequest = undefined;
-    if (generation !== this.generation) return;
-    if (!r || r.version !== live.state.version) {
-      this.mixPath = "";
-      this.mixVersion = -1;
-      return;
-    }
-    this.mixVersion = r.version;
-    if (r.path !== this.mixPath) {
-      this.mixPath = r.path;
-      this.audio.src = fileUrl(r.path);
-    }
-  }
+  constructor(private preview: Preview) {}
 
   private now(): number {
-    if (this.mixPath && !this.audio.paused && this.audio.readyState >= 2) return this.audio.currentTime;
-    return this.startTime + (performance.now() - this.startWall) / 1000;
+    return this.audio.time(this.startTime + (performance.now() - this.startWall) / 1000);
   }
 
   async play() {
-    const { project, version } = live.state;
+    const { project } = live.state;
     if (!project || ui.get().playing) return;
     let currentProject = project;
     let end = compositionDuration(project);
@@ -145,43 +135,44 @@ export class Player {
     let t = ui.get().playhead;
     if (t >= end - 0.05) t = 0;
     ui.set({ playing: true, playhead: t });
-    await this.prepareAudio(generation, project, version);
+    this.audio.configure(project, end);
+    await this.audio.prime(t);
     if (generation !== this.generation) return;
     this.startTime = t;
     this.startWall = performance.now();
-    if (this.mixPath) {
-      this.audio.currentTime = t;
-      // Let the media clock take over once it starts. A slow load must not stall video playback.
-      void this.audio.play().then(() => {
-        if (generation === this.generation) this.audio.currentTime = Math.min(this.audio.duration || end, this.startTime + (performance.now() - this.startWall) / 1000);
-      }).catch(() => {});
-    }
+    this.audio.update(this.audio.time(t));
     let lastFrame = -1;
     const tick = () => {
       if (generation !== this.generation) return;
       const next = live.state.project;
-      if (!next || next.id !== project.id) return;
+      if (!next || next.id !== project.id) {
+        this.dispose();
+        return;
+      }
+      let time = this.now();
       if (next !== currentProject) {
         currentProject = next;
         end = compositionDuration(next);
         lastFrame = -1;
+        this.startTime = time;
+        this.startWall = performance.now();
+        this.audio.configure(next, end);
+        time = this.audio.time(time);
       }
-      let time = this.now();
       if (time >= end) {
         if (end > 0 && ui.get().loop) {
           time = 0;
           lastFrame = -1;
           this.startTime = 0;
           this.startWall = performance.now();
-          if (this.mixPath) {
-            this.audio.currentTime = 0;
-            void this.audio.play().catch(() => {});
-          }
+          this.audio.rewind();
+          this.audio.time(0);
         } else {
           this.pause(Math.max(0, end - 1 / currentProject.canvas.fps));
           return;
         }
       }
+      this.audio.update(time);
       const frame = Math.floor(time * currentProject.canvas.fps + 1e-6);
       if (frame !== lastFrame) {
         lastFrame = frame;
@@ -198,7 +189,7 @@ export class Player {
     this.generation++;
     cancelAnimationFrame(this.raf);
     clearTimeout(this.seekTimer);
-    this.audio.pause();
+    this.audio.stop();
     const t = at ?? ui.get().playhead;
     ui.set({ playing: false, playhead: t });
     void live.call("setPlayhead", { seconds: t }).catch(() => {});
@@ -226,9 +217,7 @@ export class Player {
     this.generation++;
     cancelAnimationFrame(this.raf);
     clearTimeout(this.seekTimer);
-    this.audio.pause();
-    this.audio.removeAttribute("src");
-    this.audio.load();
+    this.audio.dispose();
     if (ui.get().playing) ui.set({ playing: false });
   }
 }

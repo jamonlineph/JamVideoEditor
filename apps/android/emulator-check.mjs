@@ -65,24 +65,37 @@ const got = await fetch(`${base}/web/file?path=${encodeURIComponent(frame.path)}
 if (!got.ok) throw new Error(`could not fetch the frame (${got.status})`);
 fs.writeFileSync(path.join(outDir, "android-frame.jpg"), Buffer.from(await got.arrayBuffer()));
 
-step("export");
-const job = await call("export", {});
-console.log(`job ${job.jobId}`);
-let status;
-for (let i = 0; i < 600; i++) {
-  await new Promise((r) => setTimeout(r, 2000));
-  status = await call("exportStatus", { jobId: job.jobId });
-  if (i % 5 === 0) console.log(`  ${status.status} ${Math.round((status.progress ?? 0) * 100)}% ${status.message ?? ""}`);
-  if (status.status !== "running" && status.status !== "queued") break;
+async function checkExport(args, fileName) {
+  const job = await call("export", args);
+  console.log(`job ${job.jobId}`);
+  let status;
+  for (let i = 0; i < 600; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    status = await call("exportStatus", { jobId: job.jobId });
+    if (i % 5 === 0) console.log(`  ${status.status} ${Math.round((status.progress ?? 0) * 100)}% ${status.message ?? ""}`);
+    if (status.status !== "running" && status.status !== "queued") break;
+  }
+  if (status.status !== "done") throw new Error(`export ended ${status.status}: ${JSON.stringify(status)}`);
+  const { output } = status;
+  console.log(`exported ${output.width}x${output.height} (${output.frames} frames, ${output.sizeBytes} bytes, ${output.renderSeconds}s${output.encoder ? `, ${output.encoder}` : ""})`);
+  const video = await fetch(`${base}/web/file?path=${encodeURIComponent(output.path)}`, { headers });
+  if (!video.ok) throw new Error(`could not fetch the exported video (${video.status})`);
+  const file = path.join(outDir, fileName);
+  fs.writeFileSync(file, Buffer.from(await video.arrayBuffer()));
+  const { streams } = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,nb_frames", "-of", "json", file], { encoding: "utf8" }));
+  const picture = streams.find((stream) => stream.codec_type === "video");
+  if (!picture || !streams.some((stream) => stream.codec_type === "audio")) throw new Error("the export is missing its video or audio");
+  return picture;
 }
-if (status.status !== "done") throw new Error(`export ended ${status.status}: ${JSON.stringify(status)}`);
-console.log(`exported ${status.output.path} (${status.output.frames} frames, ${status.output.sizeBytes} bytes, ${status.output.renderSeconds}s)`);
-const video = await fetch(`${base}/web/file?path=${encodeURIComponent(status.output.path)}`, { headers });
-const file = path.join(outDir, "android-export.mp4");
-fs.writeFileSync(file, Buffer.from(await video.arrayBuffer()));
-const probe = execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,nb_frames", "-of", "compact", file], { encoding: "utf8" });
-console.log(probe.trim());
-if (!/codec_type=video/.test(probe) || !/codec_type=audio/.test(probe)) throw new Error("the export is missing its video or audio");
+
+step("export with project settings");
+await checkExport({}, "android-export.mp4");
+
+step("export one second with the Fast 720p preset");
+const fast = await checkExport({ preset: "fast-720p", from: 0, to: 1 }, "android-fast-export.mp4");
+if (fast.codec_name !== "h264" || fast.width !== 1280 || fast.height !== 720 || Number(fast.nb_frames) !== 30) {
+  throw new Error(`unexpected Fast 720p output: ${JSON.stringify(fast)}`);
+}
 
 ws.close();
 console.log("android editor OK");

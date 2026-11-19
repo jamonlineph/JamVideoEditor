@@ -20,6 +20,8 @@ export interface MixOptions {
   endSeconds?: number;
   signal?: AbortSignal;
   concurrency?: number;
+  /** Bound clip PCM allocations to the requested playback range. */
+  playbackWindow?: boolean;
 }
 
 /** ffmpeg filter description that turns a clip's source window into playback-order, speed-adjusted stereo. */
@@ -61,23 +63,24 @@ async function pool<T>(items: T[], limit: number, worker: (item: T) => Promise<v
 const BLOCK = 128;
 
 /** Add a decoded clip into `dest` at its timeline position with its gain envelope (and optional extra per-frame gain). */
-function place(dest: Float32Array, pcm: Float32Array, clip: AudioClipPlan, rangeStart: number, extraGain?: (frame: number) => number) {
+function place(dest: Float32Array, pcm: Float32Array, clip: AudioClipPlan, rangeStart: number, extraGain?: (frame: number) => number, firstFrame = 0) {
   const sr = MIX_SAMPLE_RATE;
-  const frames = Math.min(Math.floor(pcm.length / 2), Math.round(clip.durationSeconds * sr));
+  const frames = Math.min(firstFrame + Math.floor(pcm.length / 2), Math.round(clip.durationSeconds * sr));
   const offset = Math.round((clip.startSeconds - rangeStart) * sr);
   const total = dest.length / 2;
-  for (let b = 0; b < frames; b += BLOCK) {
+  const first = Math.max(firstFrame, -offset);
+  for (let b = Math.floor(first / BLOCK) * BLOCK; b < frames; b += BLOCK) {
     const g0 = clipGainAt(clip, b / sr);
     const g1 = clipGainAt(clip, Math.min(frames, b + BLOCK) / sr);
     const end = Math.min(frames, b + BLOCK);
-    for (let i = b; i < end; i++) {
+    for (let i = Math.max(b, first); i < end; i++) {
       const o = offset + i;
-      if (o < 0) continue;
       if (o >= total) return;
       let g = g0 + ((g1 - g0) * (i - b)) / BLOCK;
       if (extraGain) g *= extraGain(o);
-      dest[o * 2] += pcm[i * 2] * g;
-      dest[o * 2 + 1] += pcm[i * 2 + 1] * g;
+      const sample = (i - firstFrame) * 2;
+      dest[o * 2] += pcm[sample] * g;
+      dest[o * 2 + 1] += pcm[sample + 1] * g;
     }
   }
 }
@@ -109,6 +112,15 @@ function duckGain(voice: Float32Array, clip: AudioClipPlan): (frame: number) => 
   };
 }
 
+/** Keep gain interpolation on the original clip's block boundaries across adjacent windows. */
+function decodeWindow(clip: AudioClipPlan, rangeStart: number, rangeFrames: number) {
+  const sr = MIX_SAMPLE_RATE;
+  const offset = Math.round((clip.startSeconds - rangeStart) * sr);
+  const start = Math.max(0, Math.floor(-offset / BLOCK) * BLOCK);
+  const end = Math.min(Math.round(clip.durationSeconds * sr), Math.ceil((rangeFrames - offset) / BLOCK) * BLOCK);
+  return { start, count: Math.max(0, end - start) };
+}
+
 /** Render the timeline's audio to stereo PCM: per-clip decode and time-stretch in ffmpeg, mixing, ducking and limiting here. */
 export async function renderAudioMix(project: Project, opts: MixOptions = {}): Promise<MixResult> {
   const sr = MIX_SAMPLE_RATE;
@@ -116,45 +128,60 @@ export async function renderAudioMix(project: Project, opts: MixOptions = {}): P
   const end = Math.max(start, Math.min(opts.endSeconds ?? Infinity, compositionDuration(project)));
   const duration = end - start;
   const warnings: string[] = [];
-  const clips = buildAudioPlan(project).filter((c) => c.startSeconds < end && c.startSeconds + c.durationSeconds > start);
-  const voice = new Float32Array(Math.round(duration * sr) * 2);
-  const other = new Float32Array(voice.length);
+  const plan = buildAudioPlan(project);
+  const inRange = (clip: AudioClipPlan, from: number) => clip.startSeconds < end && clip.startSeconds + clip.durationSeconds > from;
+  const clips = plan.filter((c) => inRange(c, start));
+  // Warm the ducking envelope by up to five time constants. Its remaining error decays
+  // below 1%, and aligning to 10 ms keeps detector blocks consistent between windows.
+  const history = opts.playbackWindow ? clips.reduce((max, clip) => !clip.isVoice && clip.ducking.enabled
+    ? Math.max(max, 5 * Math.max(clip.ducking.attackSeconds, clip.ducking.releaseSeconds)) : max, 0) : 0;
+  const voiceStart = history > 0 ? Math.max(0, Math.floor((start - history) * 100) / 100) : start;
+  const prerollFrames = Math.round((start - voiceStart) * sr);
+  const other = new Float32Array(Math.round(duration * sr) * 2);
+  const voice = new Float32Array(other.length + prerollFrames * 2);
 
-  const decode = async (clip: AudioClipPlan): Promise<Float32Array | null> => {
+  const addClip = async (clip: AudioClipPlan, dest: Float32Array, rangeStart: number, extraGain?: (frame: number) => number) => {
     if (!fs.existsSync(clip.path)) {
       warnings.push(`Missing media for ${clip.elementId}: ${clip.path}`);
-      return null;
+      return;
     }
     try {
-      return await decodePcm(clip.path, {
-        startSeconds: clip.sourceInSourceSeconds,
-        durationSeconds: clip.sourceDurationSourceSeconds,
+      const window = opts.playbackWindow ? decodeWindow(clip, rangeStart, dest.length / 2) : undefined;
+      if (window && window.count === 0) return;
+      const direct = window && !clip.reversed && clip.segments.length === 1 && clip.segments[0].rate === 1
+        && (!clip.voiceEnhance.enabled || (!clip.voiceEnhance.reduceNoise && !clip.voiceEnhance.enhanceVoice));
+      // Ordinary forward playback can seek straight to this range, with a short decode
+      // lead-in for resampling. Stateful filters still see the original clip's prefix.
+      const lead = direct ? Math.min(window.start, Math.round(sr * 0.1)) : 0;
+      const skipped = direct ? (window.start - lead) / sr : 0;
+      const count = window ? window.count : 0;
+      const pcm = await decodePcm(clip.path, {
+        startSeconds: clip.sourceInSourceSeconds + skipped,
+        durationSeconds: Math.max(0, Math.min(clip.sourceDurationSourceSeconds - skipped, direct ? (count + lead) / sr : Infinity)),
         sampleRate: sr,
         channels: 2,
         signal: opts.signal,
+        outputSamples: direct ? { start: lead, count } : window,
         ...clipFilterGraph(clip),
       });
+      place(dest, pcm, clip, rangeStart, extraGain, window?.start);
     } catch (e) {
       if (opts.signal?.aborted) throw e;
       warnings.push(`Could not decode audio for ${clip.elementId}: ${(e as Error).message}`);
-      return null;
     }
   };
 
   const limit = opts.concurrency ?? 6;
-  await pool(clips.filter((c) => c.isVoice), limit, async (clip) => {
-    const pcm = await decode(clip);
-    if (pcm) place(voice, pcm, clip, start);
-  });
+  await pool(plan.filter((c) => c.isVoice && inRange(c, voiceStart)), limit, (clip) => addClip(clip, voice, voiceStart));
   await pool(clips.filter((c) => !c.isVoice), limit, async (clip) => {
-    const pcm = await decode(clip);
-    if (pcm) place(other, pcm, clip, start, clip.ducking.enabled ? duckGain(voice, clip) : undefined);
+    const duck = clip.ducking.enabled ? duckGain(voice, clip) : undefined;
+    await addClip(clip, other, start, duck ? (frame) => duck(frame + prerollFrames) : undefined);
   });
 
   // Sum buses and soft-limit peaks above -0.5 dBFS.
   const t = 0.944;
   for (let i = 0; i < other.length; i++) {
-    const x = other[i] + voice[i];
+    const x = other[i] + voice[i + prerollFrames * 2];
     const a = Math.abs(x);
     other[i] = a <= t ? x : Math.sign(x) * (t + (1 - t) * Math.tanh((a - t) / (1 - t)));
   }

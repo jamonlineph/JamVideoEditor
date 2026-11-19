@@ -2,9 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject }
 import { compositionDuration, isAudioKind, mainTrack, type Element, type Project, type Track } from "@openedits/core";
 import { additiveClick, live, useLive } from "./live.js";
 import { droppedPaths } from "./Dock.js";
+import { EditorIcon } from "./EditorIcon.js";
 import { formatTime, ui, useUi, capturePointer, seek } from "./uiStore.js";
+import { TimelineFilmstrip } from "./TimelineFilmstrip.js";
 
-const LANE_H: Record<string, number> = { main: 64, audio: 40, default: 34 };
+const LANE_H: Record<string, number> = { main: 80, audio: 44, default: 38 };
 const COLORS: Record<string, string> = {
   video: "var(--video)",
   image: "var(--image)",
@@ -259,13 +261,15 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     <section className="timeline" aria-label="Timeline">
       <div className="bar">
         <div className="timeline-edit">
-          <strong>Timeline</strong>
-          <button title="Split at playhead" disabled={!duration} onClick={() => void live.run("splitAt", { times: [ui.get().playhead], elementIds: selection.size ? [...selection] : mainTrack(project).elementIds })}>
-            ✂︎ Split
+          <strong><EditorIcon name="timeline" />Timeline</strong>
+          <button className="icon ghost" title="Split at playhead" aria-label="Split at playhead" disabled={!duration} onClick={() => void live.run("splitAt", { times: [ui.get().playhead], elementIds: selection.size ? [...selection] : mainTrack(project).elementIds })}>
+            <EditorIcon name="split" />
           </button>
-          <button title="Delete selection" disabled={!selection.size} onClick={() => void live.run("delete", { elementIds: [...selection] })}>
-            Delete
+          <button className="icon ghost" title="Delete selection" aria-label="Delete selection" disabled={!selection.size} onClick={() => void live.run("delete", { elementIds: [...selection] })}>
+            <EditorIcon name="delete" />
           </button>
+          <button className="icon ghost" aria-label="Undo" title="Undo" onClick={() => void live.run("undo")}><EditorIcon name="undo" /></button>
+          <button className="icon ghost" aria-label="Redo" title="Redo" onClick={() => void live.run("redo")}><EditorIcon name="redo" /></button>
           <span className="sep" />
           <button className={rs.magnetEnabled ? "on" : ""} aria-pressed={rs.magnetEnabled} title="Magnetic main track (no gaps)" onClick={() => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled })}>
             Magnet
@@ -312,16 +316,16 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                     {t.kind === "main" ? "Main" : t.name}
                   </span>
                   <button title={t.locked ? "Unlock" : "Lock"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, locked: !t.locked })} style={{ opacity: t.locked ? 1 : 0.45 }}>
-                    {t.locked ? "🔒" : "🔓"}
+                    <EditorIcon name={t.locked ? "lock" : "unlock"} />
                   </button>
                   {isAudioKind(t.kind) || t.kind === "main" ? (
                     <button title={t.muted ? "Unmute" : "Mute"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, muted: !t.muted })} style={{ opacity: t.muted ? 1 : 0.45 }}>
-                      {t.muted ? "🔇" : "🔊"}
+                      <EditorIcon name={t.muted ? "muted" : "sound"} />
                     </button>
                   ) : null}
                   {!isAudioKind(t.kind) && (
                     <button title={t.hidden ? "Show" : "Hide"} onClick={() => void live.run("setTrackFlags", { trackId: t.id, hidden: !t.hidden })} style={{ opacity: t.hidden ? 1 : 0.45 }}>
-                      {t.hidden ? "◌" : "◉"}
+                      <EditorIcon name={t.hidden ? "eyeOff" : "eye"} />
                     </button>
                   )}
                 </div>
@@ -333,6 +337,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
           <div className="lanes-inner" style={{ width }}>
             <div
               className="ruler"
+              style={{ backgroundSize: `${(step * pps) / 5}px 8px` }}
               onPointerDown={(e) => {
                 if (e.button !== 0 || dragRef.current) return;
                 capturePointer(scroller.current!, e.pointerId);
@@ -434,16 +439,19 @@ function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element
   const label = el.name ?? (el.type === "text" ? el.text : el.type === "caption" ? el.words.map((w) => w.text).join(" ") : "mediaId" in el ? project.media[el.mediaId]?.name : el.type);
   const kfOffsets = [...new Set(Object.values(el.keyframes ?? {}).flatMap((k) => (k ?? []).map((x) => x.offsetSeconds)))];
   const speed = (el.type === "video" || el.type === "audio") && (el.speed.mode === "curve" || el.speed.rate !== 1) ? (el.speed.mode === "curve" ? " · ramp" : ` · ${el.speed.rate}×`) : "";
+  const hasWaveform = (el.type === "video" || el.type === "audio") && project.media[el.mediaId]?.hasAudio && (el.type === "audio" || !el.audioDetached);
   return (
     <div
-      className={`clip${selected ? " selected" : ""}`}
+      className={`clip clip-${el.type}${selected ? " selected" : ""}${hasWaveform ? " has-waveform" : ""}`}
       data-id={el.id}
       style={{ left, width: Math.max(2, width), background: COLORS[el.type], opacity: drag?.kind === "move" && drag.moved ? 0.8 : 1 }}
       onPointerDown={(e) => onPointerDown(e, "body")}
       onDoubleClick={() => seek(el.start)}
     >
-      {(el.type === "video" || el.type === "audio") && <Waveform el={el} project={project} pps={pps} />}
+      {(el.type === "video" || el.type === "image") && <TimelineFilmstrip el={el} project={project} pps={pps} />}
+      {hasWaveform && (el.type === "video" || el.type === "audio") && <Waveform el={el} project={project} pps={pps} />}
       <div className="name">
+        {el.type === "video" && width >= 92 && <span className="clip-duration">{formatTime(el.duration, project.canvas.fps).slice(0, 5)}</span>}
         {label}
         {speed}
       </div>
@@ -468,6 +476,7 @@ function Waveform({ el, project, pps }: { el: Extract<Element, { type: "video" |
     if (!p) {
       p = live.call<{ pointsPerSecond: number; peaks: number[] }>("waveform", { mediaId: el.mediaId, pointsPerSecond: 50 });
       peaksCache.set(el.mediaId, p);
+      if (peaksCache.size > 64) peaksCache.delete(peaksCache.keys().next().value!);
       p.catch(() => peaksCache.delete(el.mediaId));
     }
     let cancelled = false;

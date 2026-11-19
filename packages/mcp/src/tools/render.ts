@@ -195,10 +195,15 @@ export const renderTools = [
     name: "export",
     title: "Export",
     category: "export",
-    description: "Start the final render using the project's export settings (setExportSettings). Writes to the outbox folder unless outputDir is set; never overwrites an existing file. Returns a jobId; poll exportStatus.",
-    input: z.object({ from: z.number().min(0).optional(), to: z.number().min(0).optional(), waitSeconds: z.number().min(0).max(600).optional() }),
+    description: "Start the final render using the project's export settings (setExportSettings). Fast presets export H.264 MP4 at 30 fps without changing project settings. Writes to the outbox folder unless outputDir is set; never overwrites an existing file. Returns a jobId; poll exportStatus.",
+    input: z.object({
+      from: z.number().min(0).optional(),
+      to: z.number().min(0).optional(),
+      waitSeconds: z.number().min(0).max(600).optional(),
+      preset: z.enum(["fast-720p", "fast-1080p"]).optional(),
+    }),
     handler: async (a, ctx) => {
-      const job = ctx.host.render.startRender({ mode: "export", startSeconds: a.from, endSeconds: a.to });
+      const job = ctx.host.render.startRender({ mode: "export", startSeconds: a.from, endSeconds: a.to, preset: a.preset });
       return jobView(a.waitSeconds ? await ctx.host.jobs.wait(job.id, a.waitSeconds * 1000) : job);
     },
   }),

@@ -142,9 +142,20 @@ export function createWeb(opts: WebOptions) {
       json(res, 401, { error: "unauthorized" });
       return true;
     }
+    if (p === "/web/mcp-connection" && req.method === "POST") {
+      const port = req.socket.localPort;
+      json(res, 200, {
+        port,
+        config: { mcpServers: { jamvideoeditor: {
+          serverUrl: `http://127.0.0.1:${port}/mcp`,
+          headers: { Authorization: `Bearer ${opts.token}` },
+        } } },
+      });
+      return true;
+    }
     if (p === "/web/config.js" && req.method === "GET") {
       res.writeHead(200, { "content-type": TYPES[".js"], "cache-control": "no-store" });
-      res.end(`window.__openedits = ${JSON.stringify({ workspace: opts.workspace, home: os.homedir() })};\n`);
+      res.end(`window.__openedits = ${JSON.stringify({ workspace: opts.workspace, home: os.homedir(), android: process.env.OPENEDITS_ANDROID === "1" })};\n`);
       return true;
     }
     if (p === "/web/file" && (req.method === "GET" || req.method === "HEAD")) {
@@ -204,12 +215,21 @@ export function createWeb(opts: WebOptions) {
 
   // ---- /web/spawn: the page's ffmpeg processes (frame decoding for the live preview, converting a
   // voiceover take). Output is streamed back as binary messages; the page can pause and resume it.
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
+  // Keep this in sync with the browser's stdin chunk size.
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 4 * 1024 * 1024 });
   wss.on("connection", (ws: WebSocket) => {
     let proc: ReturnType<typeof spawn> | null = null;
     let pausedByClient = false;
     let pausedBySocket = false;
+    let stdinBusy = false;
+    let stdinEnded = false;
     const text = (msg: unknown) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(msg));
+    const fail = (error: string) => {
+      if (ws.readyState !== ws.OPEN) return;
+      text({ error });
+      proc?.kill("SIGKILL");
+      ws.close();
+    };
     const flow = () => {
       if (!proc?.stdout) return;
       if (pausedByClient || pausedBySocket) proc.stdout.pause();
@@ -220,8 +240,15 @@ export function createWeb(opts: WebOptions) {
       if (proc && proc.exitCode === null) proc.kill("SIGKILL");
     });
     ws.on("message", (data, isBinary) => {
+      if (ws.readyState !== ws.OPEN) return;
       if (isBinary) {
-        proc?.stdin?.write(data as Buffer);
+        if (!proc?.stdin || stdinBusy || stdinEnded) return fail("FFmpeg input arrived before it was ready");
+        stdinBusy = true;
+        proc.stdin.write(data as Buffer, (error) => {
+          stdinBusy = false;
+          if (error) fail(error.message);
+          else text({ stdinReady: true });
+        });
         return;
       }
       let msg: { args?: unknown; pause?: boolean; endStdin?: boolean };
@@ -234,7 +261,11 @@ export function createWeb(opts: WebOptions) {
         pausedByClient = msg.pause;
         return flow();
       }
-      if (msg.endStdin) return void proc?.stdin?.end();
+      if (msg.endStdin) {
+        if (!proc?.stdin || stdinBusy || stdinEnded) return fail("FFmpeg input was closed before the last write completed");
+        stdinEnded = true;
+        return void proc.stdin.end();
+      }
       if (proc || !Array.isArray(msg.args) || !msg.args.every((a) => typeof a === "string")) return;
       // Only ever ffmpeg, whatever the page asked to run.
       const child = spawn(opts.ffmpeg, msg.args as string[], { stdio: ["pipe", "pipe", "pipe"] });
@@ -243,12 +274,12 @@ export function createWeb(opts: WebOptions) {
       child.stdout!.on("data", (d: Buffer) => {
         if (ws.readyState !== ws.OPEN) return;
         ws.send(d, { binary: true }, () => {
-          if (pausedBySocket && ws.bufferedAmount < 4 * 1024 * 1024) {
+          if (pausedBySocket && ws.bufferedAmount < 1024 * 1024) {
             pausedBySocket = false;
             flow();
           }
         });
-        if (ws.bufferedAmount > 32 * 1024 * 1024) {
+        if (ws.bufferedAmount > 4 * 1024 * 1024) {
           pausedBySocket = true;
           flow();
         }

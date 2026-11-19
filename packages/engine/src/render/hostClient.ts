@@ -245,14 +245,29 @@ export class RenderHostClient {
   }
 
   async request<T>(method: string, params: unknown, opts: { onProgress?: (data: Record<string, unknown>) => void; signal?: AbortSignal } = {}): Promise<T> {
-    await this.start();
+    const { signal } = opts;
+    signal?.throwIfAborted();
+    const startup = this.start();
+    if (signal) {
+      let abortStartup!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abortStartup = () => reject(signal.reason);
+        signal.addEventListener("abort", abortStartup, { once: true });
+      });
+      try {
+        await Promise.race([startup, cancelled]);
+      } finally {
+        signal.removeEventListener("abort", abortStartup);
+      }
+      signal.throwIfAborted();
+    } else await startup;
     this.touch();
     const id = ++this.seq;
     const transport = this.transport!;
     return new Promise<T>((resolve, reject) => {
       const abort = () => transport.send({ method: "cancel", params: { id } });
-      opts.signal?.addEventListener("abort", abort, { once: true });
-      const done = () => opts.signal?.removeEventListener("abort", abort);
+      signal?.addEventListener("abort", abort, { once: true });
+      const done = () => signal?.removeEventListener("abort", abort);
       this.pending.set(id, {
         resolve: (v) => {
           done();

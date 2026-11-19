@@ -3,6 +3,9 @@ package app.openedits.studio;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.res.AssetManager;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
+import android.media.MediaFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.system.Os;
@@ -185,6 +188,21 @@ final class Engine {
         return rt;
     }
 
+    private static String hardwareAvcEncoders() {
+        List<String> names = new ArrayList<>();
+        try {
+            for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+                if (!info.isEncoder() || !info.isHardwareAccelerated() || info.isAlias()) continue;
+                for (String type : info.getSupportedTypes()) {
+                    if (MediaFormat.MIMETYPE_VIDEO_AVC.equalsIgnoreCase(type)) names.add(info.getName());
+                }
+            }
+        } catch (RuntimeException e) {
+            Log.d(TAG, "Could not list hardware AVC encoders", e);
+        }
+        return String.join(",", names);
+    }
+
     private void launch(Runtime rt) throws IOException {
         File files = context.getFilesDir();
         List<String> cmd = new ArrayList<>();
@@ -211,6 +229,8 @@ final class Engine {
         env.put("OPENEDITS_FFPROBE", new File(rt.bin, "ffprobe").getPath());
         // The compositor runs in this app's WebView (MainActivity), not in an Electron window.
         env.put("OPENEDITS_RENDER_HOST", "web");
+        env.put("OPENEDITS_ANDROID", "1");
+        env.put("OPENEDITS_ANDROID_AVC_ENCODERS", hardwareAvcEncoders());
         env.put("NODE_OPTIONS", "--max-old-space-size=" + heapMegabytes());
 
         final Process p = pb.start();
