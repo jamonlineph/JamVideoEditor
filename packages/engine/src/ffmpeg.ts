@@ -109,6 +109,8 @@ export interface DecodeOptions {
   filters?: string;
   /** Full filter graph ending in [out] (overrides filters). */
   filterComplex?: string;
+  /** Exact sample range in the processed stream, at sampleRate. */
+  outputSamples?: { start: number; count: number };
   signal?: AbortSignal;
 }
 
@@ -119,8 +121,16 @@ export async function decodePcm(file: string, opts: DecodeOptions): Promise<Floa
   if (opts.startSeconds !== undefined && opts.startSeconds > 0) args.push("-ss", opts.startSeconds.toFixed(6));
   if (opts.durationSeconds !== undefined) args.push("-t", Math.max(0, opts.durationSeconds).toFixed(6));
   args.push("-i", file, "-vn");
-  if (opts.filterComplex) args.push("-filter_complex", opts.filterComplex, "-map", "[out]");
-  else if (opts.filters) args.push("-af", opts.filters);
+  const window = opts.outputSamples;
+  const trim = window && `aresample=${opts.sampleRate},atrim=start_sample=${window.start}:end_sample=${window.start + window.count},asetpts=PTS-STARTPTS`;
+  if (opts.filterComplex) {
+    const graph = trim ? `${opts.filterComplex.replace(/\[out\]$/, "[processed]")};[processed]${trim}[out]` : opts.filterComplex;
+    args.push("-filter_complex", graph, "-map", "[out]");
+  } else {
+    const filters = [opts.filters, trim].filter(Boolean).join(",");
+    if (filters) args.push("-af", filters);
+  }
+  if (window) args.push("-t", (window.count / opts.sampleRate).toFixed(9));
   args.push("-ac", String(opts.channels), "-ar", String(opts.sampleRate), "-f", "f32le", "-");
   const { stdout } = await runFfmpeg(args, { collectStdout: true, signal: opts.signal });
   const n = Math.floor(stdout.length / 4);

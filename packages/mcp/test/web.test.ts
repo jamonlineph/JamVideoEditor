@@ -1,12 +1,16 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import fs from "node:fs";
 import nodeHttp from "node:http";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { EngineHost, ffmpegPath } from "@openedits/engine";
 import { startHttpServer, type HttpServerHandle } from "../src/index.js";
 import { allTools } from "../src/registry.js";
 import { runTool } from "../src/server.js";
+import { spawn as browserSpawn } from "../../../apps/desktop/src/web/child_process.js";
 
 const tools = new Map(allTools().map((t) => [t.name, t]));
 import { ROOT, tempWorkspace, testMedia } from "../../engine/test/media.js";
@@ -55,6 +59,25 @@ describe("browser mode", () => {
       nodeHttp.get({ host: "127.0.0.1", port: http.port, path: "/web/config.js", headers: { cookie, host: `evil.example:${http.port}` } }, (res) => resolve(res.statusCode ?? 0)).on("error", reject);
     });
     expect(foreign).toBe(404);
+  });
+
+  it("provides authenticated connection settings that an HTTP MCP client can use", async () => {
+    const endpoint = `${base}/web/mcp-connection`;
+    expect((await fetch(endpoint, { method: "POST" })).status).toBe(401);
+    expect((await fetch(endpoint, { method: "POST", headers: { cookie, origin: "https://example.com" } })).status).toBe(401);
+    const res = await fetch(endpoint, { method: "POST", headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const { config: { mcpServers: { jamvideoeditor } } } = await res.json();
+    const client = new Client({ name: "connection-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(jamvideoeditor.serverUrl), {
+        requestInit: { headers: jamvideoeditor.headers },
+      }));
+      expect((await client.listTools()).tools.some((tool) => tool.name === "newProject")).toBe(true);
+    } finally {
+      await client.close();
+    }
   });
 
   it("takes uploads, serves files with ranges and keeps writes inside the workspace", async () => {
@@ -117,6 +140,95 @@ describe("browser mode", () => {
       ws.on("error", reject);
     });
     expect(hello.type).toBe("hello");
+  });
+});
+
+describe("browser FFmpeg input", () => {
+  let host: EngineHost;
+  let http: HttpServerHandle;
+
+  beforeAll(async () => {
+    host = EngineHost.create({ workspaceRoot: tempWorkspace("web-stdin") });
+    const root = path.join(ROOT, "apps/desktop/dist/web");
+    http = await startHttpServer(host, { port: 0, web: { root, ffmpeg: process.execPath } });
+    // Use the browser adapter with a real WebSocket and a child we can block on demand.
+    class BrowserSocket extends WebSocket {
+      constructor(url: string) {
+        super(url, { headers: { cookie: `openedits_token=${http.token}` } });
+      }
+    }
+    vi.stubGlobal("WebSocket", BrowserSocket);
+    vi.stubGlobal("location", new URL(`http://localhost:${http.port}`));
+  });
+
+  afterAll(async () => {
+    vi.unstubAllGlobals();
+    await http.close();
+    host.dispose();
+  });
+
+  const pipe = (gate: string) => {
+    const script = `
+      const fs = require("node:fs");
+      process.stderr.write("waiting");
+      const timer = setInterval(() => {
+        if (!fs.existsSync(process.argv[1])) return;
+        clearInterval(timer);
+        let count = 0;
+        process.stdin.on("data", (chunk) => count += chunk.length);
+        process.stdin.on("end", () => process.stdout.write(String(count)));
+      }, 10);
+    `;
+    const child = browserSpawn("ffmpeg", ["-e", script, gate]);
+    const ready = new Promise<void>((resolve) => child.stderr.on("data", () => resolve()));
+    let data = "";
+    child.stdout.on("data", (chunk: Uint8Array) => (data += Buffer.from(chunk).toString()));
+    const closed = new Promise<{ code: number | null; data: string }>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, data }));
+    });
+    return { child, ready, closed };
+  };
+
+  it("acknowledges input only after the child drains chunks, including when stdin ends with data", async () => {
+    const gate = path.join(host.paths.root, "drain");
+    const { child, ready, closed } = pipe(gate);
+    const buffer = new Uint8Array(9 * 1024 * 1024);
+    let acknowledged = false;
+    const written = new Promise<void>((resolve, reject) => {
+      child.stdin.write(buffer, (error) => {
+        acknowledged = true;
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+    // Observe the promise early so an unexpected remote exit cannot become an unhandled rejection.
+    const finished = Promise.all([written, closed]);
+    void finished.catch(() => {});
+    try {
+      await ready;
+      await delay(50);
+      expect(acknowledged).toBe(false);
+      fs.writeFileSync(gate, "");
+      await written;
+      child.stdin.end(new Uint8Array([1, 2, 3]));
+      expect((await finished)[1]).toEqual({ code: 0, data: String(buffer.byteLength + 3) });
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("releases a pending write on cancellation while the child is blocked", async () => {
+    const { child, ready, closed } = pipe(path.join(host.paths.root, "never-drain"));
+    const result = new Promise<Error | null | undefined>((resolve) => child.stdin.write(new Uint8Array(8 * 1024 * 1024), resolve));
+    try {
+      await ready;
+      child.kill();
+      expect(await result).toBeInstanceOf(Error);
+      expect(await closed).toEqual({ code: null, data: "" });
+    } finally {
+      child.kill();
+    }
   });
 });
 

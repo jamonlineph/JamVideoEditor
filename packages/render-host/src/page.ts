@@ -35,6 +35,7 @@ function encodeImage(ffmpeg: string, pixels: Uint8Array, width: number, height: 
   const codec = format === "png" ? ["-pix_fmt", "rgb24", "-c:v", "png"] : ["-pix_fmt", "yuvj444p", "-c:v", "mjpeg", "-q:v", q];
   const proc = spawn(ffmpeg, ["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${width}x${height}`, "-i", "-", "-frames:v", "1", ...codec, file], { stdio: ["pipe", "ignore", "pipe"] });
   let err = "";
+  proc.stdin!.on("error", (e) => (err += e.message));
   proc.stderr!.on("data", (d: Buffer) => (err += d.toString()));
   return new Promise((resolve, reject) => {
     proc.on("error", reject);
@@ -69,9 +70,8 @@ function sheetCanvas(count: number, columns: number, tileW: number, tileH: numbe
 }
 
 type Progress = (data: Record<string, unknown>) => void;
-const cancelled = new Set<unknown>();
 
-const handlers: Record<string, (params: any, progress: Progress, id: unknown) => Promise<unknown>> = {
+const handlers: Record<string, (params: any, progress: Progress, signal: AbortSignal) => Promise<unknown>> = {
   async ping() {
     const gl = compositor.gl;
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
@@ -126,7 +126,7 @@ const handlers: Record<string, (params: any, progress: Progress, id: unknown) =>
   },
 
   /** Render a frame range and pipe raw frames into an ffmpeg encoder. */
-  async renderVideo(p: { ctx: RenderContext; times: number[]; width: number; height: number; ffmpegArgs: string[] }, progress, id) {
+  async renderVideo(p: { ctx: RenderContext; times: number[]; width: number; height: number; ffmpegArgs: string[] }, progress, signal) {
     media.use(p.ctx);
     const warnings = new Set<string>();
     const encoder = spawn(p.ctx.ffmpeg, p.ffmpegArgs, { stdio: ["pipe", "ignore", "pipe"] });
@@ -143,23 +143,28 @@ const handlers: Record<string, (params: any, progress: Progress, id: unknown) =>
     });
     const pixels = new Uint8Array(p.width * p.height * 4);
     const started = performance.now();
+    const stop = () => encoder.kill("SIGKILL");
+    signal.addEventListener("abort", stop, { once: true });
     try {
       for (let i = 0; i < p.times.length; i++) {
-        if (cancelled.has(id)) throw new Error("Cancelled");
+        signal.throwIfAborted();
         if (failed || encoder.exitCode !== null) throw new Error(`Encoder stopped: ${stderr.trim().split("\n").pop() ?? failed}`);
         for (const w of await renderScene(p.ctx, p.times[i], p.width, p.height)) warnings.add(w);
+        signal.throwIfAborted();
         compositor.readPixels(pixels);
         await new Promise<void>((resolve, reject) => encoder.stdin!.write(pixels, (e) => (e ? reject(e) : resolve())));
         if (i % 15 === 0 || i === p.times.length - 1) progress({ frame: i + 1, total: p.times.length, fps: ((i + 1) / (performance.now() - started)) * 1000 });
       }
       encoder.stdin!.end();
       const code = await closed;
+      signal.throwIfAborted();
       if (code !== 0) throw new Error(`Encoder failed (${code}): ${stderr.trim().split("\n").slice(-2).join(" | ")}`);
     } catch (e) {
-      encoder.kill("SIGKILL");
+      stop();
+      await closed;
       throw e;
     } finally {
-      cancelled.delete(id);
+      signal.removeEventListener("abort", stop);
     }
     return { frames: p.times.length, seconds: (performance.now() - started) / 1000, warnings: [...warnings] };
   },
@@ -172,19 +177,29 @@ const handlers: Record<string, (params: any, progress: Progress, id: unknown) =>
 
 // One request at a time: the compositor and frame readers are shared state.
 let queue: Promise<void> = Promise.resolve();
+const requests = new Map<unknown, AbortController>();
 ipcRenderer.on("from-engine", (_event, msg: { id: unknown; method: string; params: unknown }) => {
-  if (msg.method === "cancel") {
-    cancelled.add((msg.params as { id: unknown }).id);
+  if (msg.method === "disconnect") {
+    for (const request of requests.values()) request.abort();
     return;
   }
+  if (msg.method === "cancel") {
+    requests.get((msg.params as { id: unknown }).id)?.abort();
+    return;
+  }
+  const controller = new AbortController();
+  requests.set(msg.id, controller);
   queue = queue.then(async () => {
     const handler = handlers[msg.method];
     try {
+      controller.signal.throwIfAborted();
       if (!handler) throw new Error(`Unknown method ${msg.method}`);
-      const result = await handler(msg.params, (data) => ipcRenderer.send("to-engine", { id: msg.id, progress: data }), msg.id);
+      const result = await handler(msg.params, (data) => ipcRenderer.send("to-engine", { id: msg.id, progress: data }), controller.signal);
       ipcRenderer.send("to-engine", { id: msg.id, ok: true, result });
     } catch (e) {
       ipcRenderer.send("to-engine", { id: msg.id, ok: false, error: (e as Error)?.message ?? String(e) });
+    } finally {
+      requests.delete(msg.id);
     }
   });
 });

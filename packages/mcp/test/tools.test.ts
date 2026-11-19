@@ -119,10 +119,25 @@ describe("MCP tool surface", () => {
     // Media panel and placement.
     const imported = await call("importToMediaPanel", { paths: [m.clipB, m.music, m.photo] });
     const [medB, medMusic, medPhoto] = imported.addedIds as string[];
+    const thumbnail = await call("mediaThumbnail", { mediaId: medB, sourceSeconds: 0.5 });
+    expect(fs.statSync(thumbnail.path).size).toBeGreaterThan(0);
+    expect((await call("mediaThumbnail", { mediaId: medB, sourceSeconds: 0.6 })).path).toBe(thumbnail.path);
     const folder = await call("createMediaFolder", { name: "B-roll" });
     expect(folder.folder.name).toBe("B-roll");
     expect((await call("mediaPanel", { filter: "video", unreferencedOnly: true })).total).toBe(1);
     const placed = await call("addMediaPanelItemsToTimeline", { mediaIds: [medB] });
+    const proxyJob = await call("generateEditingProxies", { mediaIds: [medB] });
+    const proxyResult = await call("editingProxyStatus", { jobId: proxyJob.jobId, waitSeconds: 20 });
+    expect(proxyResult.status).toBe("done");
+    expect((await call("cancelEditingProxies", { jobId: proxyJob.jobId })).status).toBe("done");
+    const editingCache = await call("editingCacheStatus");
+    expect(editingCache.proxyBytes).toBeGreaterThan(0);
+    expect(editingCache.proxies[medB]).toMatchObject({ width: 960, height: 540 });
+    expect(fs.existsSync(editingCache.proxies[medB].path)).toBe(true);
+    const clearedCache = await call("clearEditingCache", { scope: "proxies" });
+    expect(clearedCache.removedBytes).toBe(editingCache.proxyBytes);
+    expect(fs.existsSync(editingCache.proxies[medB].path)).toBe(false);
+    expect(fs.existsSync(m.clipB)).toBe(true);
     const clipB = placed.elementIds[0];
     const music = (await call("addMedia", { mediaId: medMusic, role: "music", start: 0 })).elementId;
     const overlay = (await call("addOverlay", { mediaId: medPhoto, start: 1, durationSeconds: 2 })).elementId;

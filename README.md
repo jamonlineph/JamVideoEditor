@@ -26,7 +26,10 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 - The app contains the whole editor: the engine, FFmpeg and ffprobe, eSpeak NG for text to speech, and the same UI and compositor as the desktop app. One `.apk` covers 64-bit ARM (`arm64-v8a`) and Intel/AMD (`x86_64`) devices, Android 10 and later.
 - **Importing:** *Import* and *Start from videos* open Android's file picker. You can also **Share** videos, music or pictures to OpenEdits Studio from Files, Photos or any other app (or *Open with* for videos): they land in the Home screen's *Inbox*, and in the open project.
 - **Exports** are kept in the app's workspace; the export dialog's **Download** button copies a video to *Movies/OpenEdits Studio* (it then shows up in Photos and Files), audio to *Music* and pictures to *Pictures*.
-- **Editing in a resized window:** use **Library** to import or add media and **Inspector** to edit the selected clip. These panels open over the preview in compact windows. **Preview → Quality → Draft** reduces playback resolution while keeping your export settings. **Fit** shows the full cut in the timeline.
+- **Editing in a resized window:** use the tool rail to open Media, Text, Captions and the other libraries. **Inspector** edits the selected clip. The library and inspector open over the preview in compact windows. **Fit** shows the full cut in the timeline.
+- **Playback quality:** **Preview → Quality → Auto** lowers preview resolution when playback falls behind. **Draft** starts low and **High** favors detail. **Try MediaCodec** is an experimental Android preview option for eligible H.264 and HEVC clips. The player falls back to software decoding when the hardware decoder cannot supply a frame.
+- **Editing cache:** open **Editor tools → Editing cache** to generate smaller proxies for supported SDR video such as H.264, HEVC and AV1. The dialog shows storage used by proxies, previews and thumbnails and lets you clear them. Exports use the original media.
+- **Fast Export:** pick **Fast Export · 720p** or **Fast Export · 1080p** for an H.264 MP4 at 30 fps. Android tries an available hardware encoder after a runtime check and falls back to a faster software encoder. The regular export option uses the project's settings.
 - **Export progress** stays in the editor header if you hide the dialog. Reopen **Export** to cancel an active render or download a finished video.
 - **Voiceovers** use the device's microphone (the app asks the first time).
 - **Exports keep going in the background**: while the editor is open the app shows a quiet notification, which keeps Android from pausing it.
@@ -52,6 +55,8 @@ ANDROID_HOME=/path/to/android-sdk npm run dist:android
 The `.apk` lands in `release/dist`. Set `ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` to sign with your own key, so new versions install over old ones (the CI workflow reads them from secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`). Without them each build has a throwaway key, and installing a newer build means uninstalling the old one first. `ANDROID_ABIS=arm64-v8a` builds a smaller APK for ARM only. CI installs every build on an Android emulator and edits, renders and exports a video with it (`apps/android/emulator-test.sh`).
 
 </details>
+
+**Antigravity MCP on Googlebook.** In the editor, choose **Connect AI** on the projects screen or in the editor tools menu. Copy the configuration and add its `jamvideoeditor` entry under `mcpServers` in Antigravity's raw MCP configuration. Keep the editor open. The engine only listens on loopback. If Antigravity runs in a separate Linux environment, use the ADB forwarding command shown in the dialog with ADB connected to Android. If the Googlebook does not support that route, run the editor engine and Antigravity in the same Linux environment using the setup below. That engine uses its own workspace.
 
 **Googlebook, the Linux way (optional).** The editor also runs in a Googlebook's Linux Terminal and opens in Chrome, if you prefer that:
 
@@ -161,7 +166,7 @@ packages/mcp      Tool registry (defineTool), MCP server, HTTP/WebSocket server,
 
 - `evaluateScene` (core) turns the project at a time into an ordered list of layers. The same compositor will draw the desktop UI's preview, so previews, captures and exports match.
 - The engine starts a hidden Electron window on first use and stops it after two idle minutes.
-- Frames are decoded by FFmpeg (VideoToolbox) and read one-to-one, so frames are exact: tests check that every captured and exported frame is the right source frame, through speed changes, trims, reverse and transitions. Any format FFmpeg reads works without proxies.
+- FFmpeg decodes the original media and the frame reader uses presentation timestamps, including for variable-frame-rate clips. Tests cover source frame selection through speed changes, trims, reverse and transitions. Editing proxies preserve the source timing for preview.
 - Exports read the composited pixels back and encode with FFmpeg's VideoToolbox H.264/HEVC encoders (or ProRes). Audio comes from the engine's own mixdown (per-clip time-stretch, volume, fades, voice enhance, ducking, limiter).
 - Images for agents: `captureFrame`, `frameSheet`, `captureSourceFrames`, `view_media`, `previewVideoFrames` and `view_render` return MCP image content as well as file paths.
 - Every effect and transition in the catalog is drawn. Subject effects need their subject mask, which Apple Vision computes (macOS only).
@@ -207,7 +212,7 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
   - **Viewport:** the WebGL compositor, the same one export uses. It has on-canvas move, scale and rotate handles, which preview live and commit one undo step on release, plus a 10% grid and the transport.
   - **Inspector:** the 42 tool panels filtered to the selected clip, with sliders that commit on release, keyframe diamonds at the playhead, curves, HSL, wheels, effects, captions and text-to-speech. With nothing selected it shows canvas, ripple, brief and transcript actions.
   - **Timeline:** ruler and beat markers, scrubbing, lock, mute and hide per track, move, reorder and trim with snapping, moves between the main track and overlays, waveforms, keyframes and transitions, and zoom with Ctrl or Cmd and the wheel.
-- **Playback.** Video frames come from the compositor. Audio is the engine's own mixdown (`previewAudio`, cached per project version), which keeps preview and export sounding the same.
+- **Playback.** Video frames come from the compositor. The player uses short windows of the engine's audio mix, caches them by the audio inputs, and preloads the next window.
 - **Recording and shortcuts.** A teleprompter, and a voiceover recorder with a dB meter and countdown. Agents can start and stop a take with `startVoiceoverRecording` and `stopVoiceoverRecording`. Five shortcut maps: Edits, CapCut, Premiere Pro, Final Cut Pro and DaVinci Resolve.
 - **Tests.** `apps/desktop/test/ui.test.ts` launches the real app with a hidden window and an MCP agent on the same engine. It checks:
   - the home screen and creating a project
@@ -254,6 +259,6 @@ All presets are original to OpenEdits; no assets are copied from other apps. The
 
 ## Roadmap
 
-- **Phase 3: rendering and audio analysis.** Done (see above). Left for later: bundled camera LUTs generated from the vendors' log curves, HDR tone mapping, and media-bin thumbnails.
+- **Phase 3: rendering and audio analysis.** Done (see above). Left for later: bundled camera LUTs generated from the vendors' log curves and HDR tone mapping.
 - **Phase 4: transcripts and AI.** Done (see above). Not done: speaker diarization, and a learned (rather than speech-band) voice isolation model.
-- **Phase 5: Electron and React desktop UI.** Done (see above). Not done: thumbnails on video clips and in the media bin, a crop handle on the canvas (crop is in the inspector), app packaging and signing, and a check of real microphone capture (the tests use a generated tone).
+- **Phase 5: Electron and React desktop UI.** Done (see above). Left for later: a crop handle on the canvas, release signing and a check of real microphone capture (the tests use a generated tone).

@@ -4,11 +4,17 @@ import path from "node:path";
 import { ipcRenderer, webUtils } from "electron";
 import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, fontStack, mainTrack, type MediaAsset } from "@openedits/core";
 import { fileUrl, live, selectedElements, useFeatures, useLive, WEB, WORKSPACE } from "./live.js";
-import { ui, useUi } from "./uiStore.js";
+import { ui, useUi, type UiState } from "./uiStore.js";
 import { PreviewTile } from "./PreviewTile.js";
+import { EditorIcon } from "./EditorIcon.js";
+import { MediaThumbnail } from "./TimelineFilmstrip.js";
 
-const KIND_ICON: Record<string, string> = { video: "🎬", audio: "🎵", image: "🖼" };
-const KIND_COLOR: Record<string, string> = { video: "var(--video)", audio: "var(--audio)", image: "var(--image)" };
+type DockTab = UiState["dockTab"];
+export const DOCK_LABEL: Record<DockTab, string> = {
+  media: "Media", audio: "Audio", text: "Text", captions: "Captions",
+  effects: "Effects", transitions: "Transitions", filters: "Filters", luts: "LUTs", stickers: "Stickers",
+};
+export const DOCK_RAIL = ["media", "audio", "text", "captions", "effects", "transitions", "filters", "stickers"] as const;
 
 function fmt(sec?: number) {
   if (sec === undefined) return "";
@@ -40,22 +46,19 @@ export async function droppedPaths(e: React.DragEvent): Promise<string[]> {
     .filter(Boolean);
 }
 
-export function Dock() {
+export function Dock({ onClose }: { onClose: () => void }) {
   const tab = useUi("dockTab");
   return (
     <div className="dock">
-      <div className="tabs">
-        {(["media", "audio", "text", "effects"] as const).map((t) => (
-          <button key={t} className={tab === t ? "active" : ""} aria-pressed={tab === t} onClick={() => ui.set({ dockTab: t })}>
-            {t[0].toUpperCase() + t.slice(1)}
-          </button>
-        ))}
+      <div className="dock-heading">
+        <h2><EditorIcon name={tab === "luts" ? "filters" : tab} />{DOCK_LABEL[tab]}</h2>
+        <button className="icon ghost" title="Close library" aria-label="Close library" onClick={onClose}><EditorIcon name="close" /></button>
       </div>
       <div className="pane">
         {tab === "media" && <MediaTab />}
         {tab === "audio" && <AudioTab />}
-        {tab === "text" && <TextTab />}
-        {tab === "effects" && <EffectsTab />}
+        {(tab === "text" || tab === "captions") && <TextTab captions={tab === "captions"} />}
+        {tab !== "media" && tab !== "audio" && tab !== "text" && tab !== "captions" && <EffectsTab tab={tab} />}
       </div>
     </div>
   );
@@ -85,7 +88,7 @@ function MediaTab() {
         <button className="primary" onClick={() => void importFiles()}>
           Import
         </button>
-        <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} style={{ flex: 1 }}>
+        <select aria-label="Sort media" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} style={{ flex: 1 }}>
           <option value="date_imported">Date imported</option>
           <option value="name">Name</option>
           <option value="duration">Duration</option>
@@ -102,7 +105,10 @@ function MediaTab() {
           Unused
         </button>
       </div>
-      {items.length === 0 && <div className="empty small">Drop files here or click Import.</div>}
+      {items.length === 0 && <div className="library-empty">
+        <EditorIcon name={filter === "audio" ? "audio" : "media"} />
+        <span>{Object.keys(project.media).length ? "No matching media" : "Drop files here or click Import"}</span>
+      </div>}
       {items.map((m) => (
         <div
           key={m.id}
@@ -112,8 +118,9 @@ function MediaTab() {
           onDoubleClick={() => add(m)}
           title="Double-click to add · drag onto the timeline · drop on a clip to replace"
         >
-          <div className="kind" style={{ background: KIND_COLOR[m.kind] }}>
-            {KIND_ICON[m.kind]}
+          <div className="kind">
+            <EditorIcon name={m.kind === "audio" ? "audio" : "media"} />
+            {m.kind !== "audio" && <MediaThumbnail media={m} />}
           </div>
           <div className="info">
             <div>{m.name}</div>
@@ -224,21 +231,22 @@ function AudioTab() {
   );
 }
 
-function TextTab() {
+function TextTab({ captions }: { captions: boolean }) {
   const s = useLive();
   const features = useFeatures();
   const add = (presetId: string, text = "Your text") => void live.run("addText", { text, start: ui.get().playhead, duration: 3, presetId });
   const hasMain = mainTrack(s.project!).elementIds.length > 0;
   return (
     <>
-      <div className="section-title" style={{ marginTop: 0 }}>
-        Text
+      <div className="dock-subhead">
+        <strong>{captions ? "Caption styles" : "Styles"}</strong>
+        {!captions && <button className="ghost" onClick={() => add("classic")}>＋ Add title</button>}
       </div>
-      <div className="tiles">
+      {!captions && <div className="tiles text-style-grid">
         {TEXT_PRESETS.map((p) => {
           const st = p.data.style;
           return (
-            <div key={p.id} className="tile" onClick={() => add(p.id)} title={`Add "${p.name}" text at the playhead`}>
+            <button key={p.id} className="tile text-style" onClick={() => add(p.id)} title={`Add "${p.name}" text at the playhead`}>
               <span
                 style={{
                   fontFamily: fontStack(st.fontFamily),
@@ -251,18 +259,15 @@ function TextTab() {
                   textTransform: st.uppercase ? "uppercase" : undefined,
                   WebkitTextStroke: st.strokeColor ? `1px ${st.strokeColor}` : undefined,
                   textShadow: st.shadowColor ? `0 0 6px ${st.shadowColor}` : undefined,
-                  fontSize: 15,
-                  whiteSpace: "nowrap",
                 }}
               >
-                Aa
+                {p.name}
               </span>
-              <span className="label">{p.name}</span>
-            </div>
+            </button>
           );
         })}
-      </div>
-      <div className="section-title">Captions</div>
+      </div>}
+      {captions && <>
       <div className="muted small" style={{ marginBottom: 6 }}>
         {features && !features.transcription
           ? "Captions need whisper.cpp (whisper-cli) and a Whisper model, which are not installed on this computer. See the README for setup."
@@ -272,7 +277,7 @@ function TextTab() {
       </div>
       <div className="tiles">
         {CAPTION_STYLES.map((c) => (
-          <div
+          <button
             key={c.id}
             className="tile"
             onClick={() => {
@@ -287,16 +292,16 @@ function TextTab() {
               word <span style={{ color: c.data.mode === "box" ? "#fff" : c.data.highlightColor, background: c.data.mode === "box" ? c.data.highlightColor : undefined, padding: "0 3px", borderRadius: 3 }}>by</span> word
             </span>
             <span className="label">{c.name}</span>
-          </div>
+          </button>
         ))}
       </div>
+      </>}
     </>
   );
 }
 
-function EffectsTab() {
+function EffectsTab({ tab }: { tab: Extract<DockTab, "effects" | "transitions" | "filters" | "luts" | "stickers"> }) {
   const s = useLive();
-  const [tab, setTab] = useState<"filters" | "effects" | "transitions" | "luts" | "stickers">("filters");
   const sel = selectedElements(s)[0];
   const need = (what: string) => live.toast("info", `Select ${what} first`);
   const items =
@@ -325,8 +330,8 @@ function EffectsTab() {
     <>
       <div className="chips">
         {(["filters", "effects", "transitions", "luts", "stickers"] as const).map((t) => (
-          <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-            {t === "luts" ? "LUTs" : t[0].toUpperCase() + t.slice(1)}
+          <button key={t} className={tab === t ? "on" : ""} aria-pressed={tab === t} onClick={() => ui.set({ dockTab: t })}>
+            {DOCK_LABEL[t]}
           </button>
         ))}
       </div>
@@ -335,7 +340,7 @@ function EffectsTab() {
         {(items as { id: string; name: string; category: string; data: { svgPath?: string; requiresSubjectMask?: boolean } }[]).map((i) => {
           if (tab === "stickers" || i.id === "custom") {
             return (
-              <div key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
+              <button key={i.id} className="tile" onClick={() => apply(i.id)} title={i.name}>
                 {i.data.svgPath ? (
                   <svg viewBox="0 0 24 24" width="22" height="22">
                     <path d={i.data.svgPath} fill="white" />
@@ -344,7 +349,7 @@ function EffectsTab() {
                   <span style={{ fontWeight: 600, fontSize: 12 }}>{i.name}…</span>
                 )}
                 <span className="label">{i.category}</span>
-              </div>
+              </button>
             );
           }
           const kind = tab === "filters" ? "filter" : tab === "transitions" ? "transition" : tab === "luts" ? "lut" : i.data.requiresSubjectMask ? "subject" : "effect";

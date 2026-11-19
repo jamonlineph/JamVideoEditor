@@ -10,9 +10,14 @@ export interface MediaRenderInfo {
   /** ffmpeg frame-rate expression, e.g. "30" or "30000/1001". */
   fpsExpr: string;
   fps: number;
+  videoCodec?: string;
+  colorTransfer?: string;
   /** Force a YUV->RGB matrix when the file is untagged (e.g. "bt709"). */
   inColorMatrix?: string;
+  editingProxy?: EditingProxy;
 }
+
+export type EditingProxy = Pick<MediaRenderInfo, "path" | "width" | "height">;
 
 export interface RenderContext {
   project: Project;
@@ -35,7 +40,7 @@ export function fpsExpression(fps: number | undefined): { expr: string; value: n
 }
 
 /** Media, LUTs and warnings for drawing a project (shared by the export host and the desktop preview). */
-export function renderContextFor(project: Project, opts: { ffmpeg: string; hideCaptions?: boolean; hwaccel?: boolean }): { ctx: RenderContext; warnings: string[] } {
+export function renderContextFor(project: Project, opts: { ffmpeg: string; hideCaptions?: boolean; hwaccel?: boolean; editingProxies?: Record<string, EditingProxy> }): { ctx: RenderContext; warnings: string[] } {
   const media: Record<string, MediaRenderInfo> = {};
   const warnings: string[] = [];
   const used = new Set<string>();
@@ -60,7 +65,10 @@ export function renderContextFor(project: Project, opts: { ffmpeg: string; hideC
       height: m.height ?? 1080,
       fpsExpr: fps.expr,
       fps: fps.value,
+      ...(m.videoCodec ? { videoCodec: m.videoCodec } : {}),
+      ...(m.colorTransfer ? { colorTransfer: m.colorTransfer } : {}),
       ...(!m.colorSpace && (m.height ?? 0) >= 720 && m.kind === "video" ? { inColorMatrix: "bt709" } : {}),
+      ...(opts.editingProxies?.[id] ? { editingProxy: opts.editingProxies[id] } : {}),
     };
     if (m.colorTransfer === "arib-std-b67" || m.colorTransfer === "smpte2084") warnings.push(`${m.name} is HDR (${m.colorTransfer === "smpte2084" ? "PQ" : "HLG"}); it is rendered without tone mapping, so colors may look flat`);
   }

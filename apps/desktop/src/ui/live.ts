@@ -196,7 +196,7 @@ export class Live {
 export const WEB = __OPENEDITS_WEB__;
 
 const params = new URLSearchParams(location.search);
-export const WORKSPACE = WEB ? ((window as unknown as { __openedits?: { workspace?: string } }).__openedits?.workspace ?? "") : (params.get("workspace") ?? "");
+export const WORKSPACE = WEB ? (window.__openedits?.workspace ?? "") : (params.get("workspace") ?? "");
 // In the browser the page and /live share an origin, and the sign-in cookie carries the token.
 export const live = new Live(WEB ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live` : `ws://127.0.0.1:${params.get("port")}/live?token=${params.get("token")}`);
 

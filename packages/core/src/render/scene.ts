@@ -203,6 +203,7 @@ function mediaLayer(project: Project, el: VideoElement | ImageElement, t: number
   const dims = { width: media?.width ?? size.width, height: media?.height ?? size.height };
   const crop = el.crop ?? NO_CROP;
   const fitted = baselineFit(size, croppedSize(dims, crop), el.transform.fit);
+  const sourceSeconds = el.type === "video" ? sourceTimeAt(project, el, t, { extrapolate }) : 0;
   return {
     ...base,
     kind: "media",
@@ -212,11 +213,11 @@ function mediaLayer(project: Project, el: VideoElement | ImageElement, t: number
     height: fitted.height * scale,
     crop,
     flip: el.flip,
-    sourceSeconds: el.type === "video" ? videoSourceTime(project, el, t, extrapolate) : 0,
+    sourceSeconds,
     reversed: el.type === "video" ? el.reversed : false,
     sourceInSourceSeconds: el.type === "video" ? el.sourceInSourceSeconds : 0,
     sourceDurationSourceSeconds: el.type === "video" ? el.sourceDurationSourceSeconds : 0,
-    subjectMasks: subjectMasks(project, el, el.type === "video" ? videoSourceTime(project, el, t, extrapolate) : 0),
+    subjectMasks: subjectMasks(project, el, sourceSeconds),
   };
 }
 
@@ -229,14 +230,6 @@ function subjectMasks(project: Project, el: VideoElement | ImageElement, sourceS
       maskMediaId: fx.subjectMaskId!,
       maskSeconds: Math.max(0, sourceSeconds - (typeof fx.params.maskStartSourceSeconds === "number" ? fx.params.maskStartSourceSeconds : 0)),
     }));
-}
-
-/** Source time of the frame to show. Reversed clips show the frame that ends at that instant, so the last frame plays first. */
-function videoSourceTime(project: Project, el: VideoElement, t: number, extrapolate: boolean): number {
-  const source = sourceTimeAt(project, el, t, { extrapolate });
-  if (!el.reversed) return source;
-  const fps = project.media[el.mediaId]?.fps ?? project.canvas.fps;
-  return Math.max(el.sourceInSourceSeconds, source - 1 / fps);
 }
 
 /** A cutout sticker is drawn like an image: its cutout PNG is a media asset. */

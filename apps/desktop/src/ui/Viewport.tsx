@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { produce } from "immer";
 import { clipBoundaries, compositionDuration, type DrawLayer, type Element, type Project } from "@openedits/core";
+import { useEditingCache } from "./editingCache.js";
 import { live, useLive, WEB } from "./live.js";
 import { Player, Preview } from "./preview.js";
 import { formatTime, ui, useUi, capturePointer } from "./uiStore.js";
@@ -11,6 +12,7 @@ export interface ViewportApi {
 }
 
 type Drag = { mode: "move" | "scale" | "rotate"; startX: number; startY: number; cx: number; cy: number; base: { x: number; y: number; scale: number; rotationDegrees: number }; elementId: string };
+const ANDROID_PREVIEW = WEB && window.__openedits?.android === true;
 
 /** A box around a drawn layer, in canvas pixels. Text sizes are estimated (the compositor rasterizes them). */
 function layerBox(l: DrawLayer): { cx: number; cy: number; w: number; h: number; rot: number } {
@@ -31,18 +33,28 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
   const showRecorder = useUi("recorder");
   const quality = useUi("previewQuality");
   const project = s.project!;
+  const cache = useEditingCache();
+  const proxies = cache.enabled && cache.projectId === project.id ? cache.proxies : undefined;
   const wrap = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [engine, setEngine] = useState<{ preview: Preview; player: Player } | null>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [drag, setDrag] = useState<Drag | null>(null);
+  const [drawnShortSide, setDrawnShortSide] = useState(0);
+  const previousShortSide = useRef(0);
+  const [androidMediaCodec, setAndroidMediaCodec] = useState(false);
   const [, force] = useState(0);
   const dragProject = useRef<Project | null>(null);
 
   useLayoutEffect(() => {
     const preview = new Preview(canvasRef.current!);
     const player = new Player(preview);
-    preview.onDrawn = () => {
+    preview.onDrawn = (scene) => {
+      const shortSide = Math.min(scene.width, scene.height);
+      if (shortSide !== previousShortSide.current) {
+        previousShortSide.current = shortSide;
+        setDrawnShortSide(shortSide);
+      }
       if (!ui.get().playing) force((n) => n + 1);
     };
     let previous = ui.get();
@@ -79,10 +91,11 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
   const shortSide = Math.max(180, Math.min(maxShortSide, Math.round(Math.min(box.w, box.h) * Math.min(2, devicePixelRatio) / 90) * 90));
   useLayoutEffect(() => {
     if (!engine) return;
-    engine.preview.shortSide = shortSide;
-    engine.preview.setProject(dragProject.current ?? project);
+    engine.preview.quality.configure(shortSide, quality === "auto");
+    engine.preview.androidMediaCodec = androidMediaCodec;
+    engine.preview.setProject(dragProject.current ?? project, proxies);
     if (!ui.get().playing) void engine.preview.draw(ui.get().playhead);
-  }, [engine, project, shortSide]);
+  }, [engine, project, shortSide, quality, proxies, androidMediaCodec]);
 
   const scene = engine?.preview.scene;
   const scale = scene ? box.w / scene.width : 1;
@@ -129,7 +142,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
       const target = p.elements[drag.elementId];
       if (target && "transform" in target) Object.assign(target.transform, patch);
     });
-    engine.preview.setProject(dragProject.current);
+    engine.preview.setProject(dragProject.current, proxies);
     void engine.preview.draw(ui.get().playhead);
   };
 
@@ -137,7 +150,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     dragProject.current = null;
     setDrag(null);
     if (engine) {
-      engine.preview.setProject(live.state.project);
+      engine.preview.setProject(live.state.project, proxies);
       if (!ui.get().playing) void engine.preview.draw(ui.get().playhead);
     }
   };
@@ -185,13 +198,17 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void }>(f
     <section className="stage" aria-label="Preview">
       <div className="preview-bar">
         <strong>Preview</strong>
+        {ANDROID_PREVIEW && <label title="Experimental Android hardware preview decoding. Unsupported clips fall back to software.">
+          <input type="checkbox" checked={androidMediaCodec} onChange={(e) => setAndroidMediaCodec(e.target.checked)} />
+          <span className="muted">Try MediaCodec</span>
+        </label>}
         <label>
           <span className="muted">Quality</span>
           <select aria-label="Preview quality" title="Affects preview playback only" value={quality} onChange={(e) => {
             const value = e.target.value;
             if (value === "auto" || value === "draft" || value === "high") ui.set({ previewQuality: value });
           }}>
-            <option value="auto">Auto</option>
+            <option value="auto">{quality === "auto" && drawnShortSide > 0 && drawnShortSide < shortSide ? `Auto · ${drawnShortSide}p` : "Auto"}</option>
             <option value="draft">Draft</option>
             <option value="high">High</option>
           </select>

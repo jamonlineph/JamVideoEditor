@@ -177,6 +177,7 @@ export function Home() {
         </span>
         <span className={`status-dot ${s.connected ? "" : "off"}`} title={s.connected ? "Engine connected" : "Engine disconnected"} />
         <div className="spacer" />
+        {WEB && <button disabled={!s.connected} onClick={() => window.dispatchEvent(new Event("openedits-mcp"))}>Connect AI</button>}
         <div className="segmented" role="radiogroup" aria-label="Shape of new projects">
           {ASPECTS.map((a) => (
             <button key={a.id} role="radio" aria-checked={aspect === a.id} className={aspect === a.id ? "on" : ""} onClick={() => setAspect(a.id)} title={`${a.label} (${a.id}): ${a.hint}`}>

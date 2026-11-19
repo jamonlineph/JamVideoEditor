@@ -4,6 +4,11 @@ import { builtinLut, type MediaLayer, type MediaRenderInfo as MediaInfo, type Re
 import { parseCube, type Compositor, type LutTexture, type SceneResources, type TextureInfo } from "@openedits/renderer";
 
 export const even = (n: number) => Math.max(16, Math.round(n / 2) * 2);
+const DEFAULT_READER_MEMORY = 192 * 1024 * 1024;
+const TIME_EPSILON = 0.000002;
+const MEDIACODEC_TIMEOUT_MS = 2000;
+type TimedFrame = { time: number; id: number; pixels: Uint8Array };
+type AndroidDecoder = "h264_mediacodec" | "hevc_mediacodec";
 
 /** Sequential raw-frame reader over an ffmpeg pipe, with a chunk cache for backwards playback. */
 export class VideoReader {
@@ -12,47 +17,102 @@ export class VideoReader {
   private buffered = 0;
   private ended = true;
   private wake: (() => void) | null = null;
-  private nextIndex = 0;
-  private last: { index: number; data: Uint8Array } | null = null;
-  private cache = new Map<number, Uint8Array>();
-  private uploadedIndex = -1;
+  private frameId = 0;
+  private firstFrameId = 0;
+  private timestamps: number[] = [];
+  private frames: TimedFrame[] = [];
+  private seekSeconds = 0;
+  private memoryBytes = DEFAULT_READER_MEMORY;
+  private uploadedId = -1;
+  private decoderError: Error | undefined;
   texture: TextureInfo | null = null;
   lastUsed = 0;
   readonly frameBytes: number;
 
-  constructor(private compositor: Compositor, private ctx: RenderContext, private info: MediaInfo, readonly width: number, readonly height: number) {
+  constructor(private compositor: Compositor, private ctx: RenderContext, private info: MediaInfo, readonly width: number, readonly height: number, readonly decoder?: AndroidDecoder) {
     this.frameBytes = width * height * 4;
   }
 
-  private start(index: number) {
+  get sourcePath() {
+    return this.info.path;
+  }
+
+  private get prefetchFrames() {
+    // Each active reader already needs a texture and its current frame.
+    return Math.max(1, Math.min(2, Math.floor(this.memoryBytes / this.frameBytes) - 2));
+  }
+
+  get reverseCacheFrames() {
+    const available = Math.floor(this.memoryBytes / this.frameBytes) - this.prefetchFrames - 2;
+    return Math.max(1, Math.min(60, available));
+  }
+
+  configureMemory(bytes: number) {
+    if (bytes === this.memoryBytes) return;
+    this.memoryBytes = bytes;
+    if (this.frames.length > this.reverseCacheFrames) this.frames = this.frames.slice(-this.reverseCacheFrames);
+    if (this.buffered > this.frameBytes * this.prefetchFrames) this.stop();
+  }
+
+  /** Drop unused decoders and CPU buffers immediately. The manager can retain the last GPU texture. */
+  idle() {
     this.stop();
-    const args = ["-v", "error", "-nostdin"];
-    // VideoToolbox only exists on macOS; other platforms decode in software (naming it there makes ffmpeg fail).
-    if (this.ctx.hwaccel !== false && process.platform === "darwin") args.push("-hwaccel", "videotoolbox");
-    // Seek half a frame early so the first decoded frame is exactly `index`.
-    if (index > 0) args.push("-ss", ((index - 0.5) / this.info.fps).toFixed(6));
+    this.frames = [];
+  }
+
+  private start(seconds: number) {
+    this.idle();
+    this.decoderError = undefined;
+    this.seekSeconds = seconds;
+    this.firstFrameId = this.frameId + 1;
+    const proxy = this.info.editingProxy?.path === this.info.path;
+    const args = ["-hide_banner", "-nostats", "-loglevel", "info", "-nostdin", "-copyts"];
+    // Proxies already carry timestamps in the original file's timeline. Rebasing a video-only
+    // proxy to zero would remove any lead-in where the original file contained only audio.
+    if (!proxy) args.push("-start_at_zero");
+    if (this.decoder) args.push("-c:v", this.decoder, "-ndk_codec", "1");
+    else if (this.ctx.hwaccel !== false && process.platform === "darwin") args.push("-hwaccel", "videotoolbox");
+    // Keep the keyframe and the intervening frames so a seek into a VFR gap can use its preceding frame.
+    if (seconds > 0) {
+      if (proxy) args.push("-seek_timestamp", "1");
+      args.push("-ss", seconds.toFixed(6), "-noaccurate_seek");
+    }
     const scale = `scale=${this.width}:${this.height}:flags=bilinear${this.info.inColorMatrix ? `:in_color_matrix=${this.info.inColorMatrix}` : ""}`;
-    // One output frame per decoded frame: frame k after the seek is source frame index + k (exact for constant-rate media).
-    args.push("-i", this.info.path, "-an", "-sn", "-dn", "-vf", scale, "-fps_mode", "passthrough", "-pix_fmt", "rgba", "-f", "rawvideo", "-");
-    const proc = spawn(this.ctx.ffmpeg, args, { stdio: ["ignore", "pipe", "ignore"] });
+    args.push("-i", this.info.path, "-map", "0:V:0", "-an", "-sn", "-dn", "-vf", `${scale},showinfo=checksum=0`, "-fps_mode", "passthrough", "-pix_fmt", "rgba", "-threads", "1", "-f", "rawvideo", "-");
+    const proc = spawn(this.ctx.ffmpeg, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = proc;
     this.chunks = [];
     this.buffered = 0;
     this.ended = false;
-    this.nextIndex = index;
     proc.stdout!.on("data", (d: Buffer) => {
       if (this.proc !== proc) return;
       this.chunks.push(d);
       this.buffered += d.length;
-      if (this.buffered > this.frameBytes * 3) proc.stdout!.pause();
+      if (this.buffered >= this.frameBytes * this.prefetchFrames) proc.stdout!.pause();
       this.wake?.();
     });
-    const finish = () => {
+    let stderr = "";
+    let timeBase = 0;
+    proc.stderr!.on("data", (data: Buffer | string) => {
       if (this.proc !== proc) return;
+      const lines = (stderr + data.toString()).split("\n");
+      stderr = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.includes("Parsed_showinfo_")) continue;
+        const base = /config in time_base:\s*(\d+)\/(\d+)/.exec(line);
+        if (base) timeBase = Number(base[1]) / Number(base[2]);
+        const pts = /\bn:\s*\d+\s+pts:\s*(-?\d+)\s+pts_time:/.exec(line);
+        if (pts && timeBase) this.timestamps.push(Number(pts[1]) * timeBase);
+      }
+      this.wake?.();
+    });
+    const finish = (error?: Error) => {
+      if (this.proc !== proc) return;
+      if (this.decoder) this.decoderError = error;
       this.ended = true;
       this.wake?.();
     };
-    proc.on("close", finish);
+    proc.on("close", (code) => finish(code === 0 ? undefined : new Error(`${this.decoder ?? "FFmpeg"} stopped (${code})`)));
     proc.on("error", finish);
   }
 
@@ -62,6 +122,7 @@ export class VideoReader {
     this.ended = true;
     this.chunks = [];
     this.buffered = 0;
+    this.timestamps = [];
     if (proc && proc.exitCode === null) proc.kill("SIGKILL");
     this.wake?.();
   }
@@ -84,63 +145,70 @@ export class VideoReader {
       else this.chunks[0] = head.subarray(take);
     }
     this.buffered -= this.frameBytes;
-    if (this.buffered < this.frameBytes * 2) this.proc?.stdout?.resume();
-    this.nextIndex++;
+    if (this.buffered < this.frameBytes * this.prefetchFrames) this.proc?.stdout?.resume();
     return frame;
   }
 
-  /** The frame with the given source index (holding the last frame past the end of the file). */
-  async frame(index: number): Promise<Uint8Array | null> {
-    index = Math.max(0, index);
-    if (this.last?.index === index) return this.last.data;
-    const cached = this.cache.get(index);
-    if (cached) {
-      this.last = { index, data: cached };
-      return cached;
-    }
-    if (this.last && index < this.last.index) {
-      // Playing backwards: decode a chunk that ends at `index` and serve from memory.
-      const size = Math.max(4, Math.min(60, Math.floor((192 * 1024 * 1024) / this.frameBytes)));
-      const first = Math.max(0, index - size + 1);
-      this.cache.clear();
-      this.start(first);
-      for (let i = first; i <= index; i++) {
-        const data = await this.read();
-        if (!data) break;
-        this.cache.set(i, data);
+  private async decodeThrough(target: number): Promise<TimedFrame | undefined> {
+    for (;;) {
+      // showinfo reports the timestamp before the matching raw frame reaches stdout.
+      while (!this.timestamps.length && !this.ended) {
+        await new Promise<void>((resolve) => (this.wake = resolve));
+        this.wake = null;
       }
-      this.stop();
-      const data = this.cache.get(index) ?? [...this.cache.values()].pop() ?? this.last.data;
-      this.last = { index, data };
-      return data;
+      if (this.decoderError) throw this.decoderError;
+      const time = this.timestamps[0];
+      if (time === undefined || (this.frames.length && time > target)) return this.frames.at(-1);
+      // A seek can return a frame after the target if the demuxer has no earlier seek point.
+      if (this.seekSeconds > 0 && time > target) return;
+      const pixels = await this.read();
+      if (this.decoderError) throw this.decoderError;
+      if (!pixels) return this.frames.at(-1);
+      this.timestamps.shift();
+      this.frames.push({ time, pixels, id: ++this.frameId });
+      if (this.frames.length > this.reverseCacheFrames) this.frames.shift();
     }
-    this.cache.clear();
-    if (!this.proc || this.ended && this.buffered < this.frameBytes || index < this.nextIndex || index - this.nextIndex > this.info.fps * 2) this.start(index);
-    let data: Uint8Array | null = null;
-    while (this.nextIndex <= index) {
-      const f = await this.read();
-      if (!f) break;
-      data = f;
-    }
-    if (!data) return this.last?.data ?? null;
-    this.last = { index, data };
-    return data;
   }
 
-  async textureAt(index: number): Promise<TextureInfo | null> {
-    const data = await this.frame(index);
-    if (!data) return this.texture;
-    const actual = this.last?.index ?? index;
-    if (!this.texture || this.uploadedIndex !== actual) {
-      this.texture = this.compositor.uploadPixels(this.texture, data, this.width, this.height);
-      this.uploadedIndex = actual;
+  private async frameAt(seconds: number, before: boolean): Promise<TimedFrame | undefined> {
+    const target = seconds + (before ? -TIME_EPSILON : TIME_EPSILON);
+    const first = this.frames[0];
+    const last = this.frames.at(-1);
+    if (first && target < first.time && this.seekSeconds === 0 && first.id === this.firstFrameId) return first;
+    if (first && last && first.time <= target && target < last.time) {
+      return this.frames.findLast((frame) => frame.time <= target);
+    }
+    const next = this.timestamps[0];
+    const jumpingForward = last && target - last.time > 2 && next !== undefined && next < target - 2;
+    if (!this.proc || (first && target < first.time) || jumpingForward) {
+      const lead = before || (first && target < first.time) ? (this.reverseCacheFrames - 1) / this.info.fps : 0;
+      this.start(Math.max(0, target - lead));
+    }
+    const frame = await this.decodeThrough(target);
+    if (frame || this.seekSeconds === 0) return frame;
+    this.start(0);
+    return this.decodeThrough(target);
+  }
+
+  async textureAt(seconds: number, before = false): Promise<TextureInfo | null> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    if (this.decoder) {
+      timeout = setTimeout(() => {
+        this.decoderError = new Error(`${this.decoder} timed out waiting for a frame`);
+        this.stop();
+      }, MEDIACODEC_TIMEOUT_MS);
+    }
+    const frame = await this.frameAt(Math.max(0, seconds), before).finally(() => clearTimeout(timeout));
+    if (!frame) return null;
+    if (!this.texture || this.uploadedId !== frame.id) {
+      this.texture = this.compositor.uploadPixels(this.texture, frame.pixels, this.width, this.height);
+      this.uploadedId = frame.id;
     }
     return this.texture;
   }
 
   dispose() {
-    this.stop();
-    this.cache.clear();
+    this.idle();
     this.compositor.deleteTexture(this.texture);
     this.texture = null;
   }
@@ -161,6 +229,9 @@ export function collect(proc: ChildProcess): Promise<Buffer> {
 export class MediaManager implements SceneResources {
   private readers = new Map<string, VideoReader>();
   private images = new Map<string, TextureInfo>();
+  private unavailableProxies = new Set<string>();
+  private unavailableAndroidDecoders = new Set<string>();
+  private androidMediaCodec = false;
   private luts = new Map<string, LutTexture | null>();
   private frameTextures = new Map<string, TextureInfo>();
   private maskTextures = new Map<string, TextureInfo>();
@@ -168,11 +239,15 @@ export class MediaManager implements SceneResources {
   ctx!: RenderContext;
   private signature = "";
 
-  constructor(private compositor: Compositor, private options: { downsizeReaders?: boolean } = {}) {}
+  constructor(private compositor: Compositor, private options: { downsizeReaders?: boolean; readerMemoryBytes?: number } = {}) {}
+
+  setAndroidMediaCodec(enabled: boolean) {
+    this.androidMediaCodec = enabled && !!this.options.downsizeReaders;
+  }
 
   /** Reset caches when the set of media files changes. */
   use(ctx: RenderContext) {
-    const sig = JSON.stringify([Object.entries(ctx.media).map(([id, m]) => [id, m.path, m.width, m.height]), ctx.luts]);
+    const sig = JSON.stringify([Object.entries(ctx.media).map(([id, m]) => [id, m.path, m.width, m.height, m.videoCodec, m.colorTransfer, m.editingProxy?.path]), ctx.luts]);
     if (sig !== this.signature) this.reset();
     this.signature = sig;
     this.ctx = ctx;
@@ -181,6 +256,10 @@ export class MediaManager implements SceneResources {
   reset() {
     for (const r of this.readers.values()) r.dispose();
     this.readers.clear();
+    this.unavailableProxies.clear();
+    this.unavailableAndroidDecoders.clear();
+    this.frameTextures.clear();
+    this.maskTextures.clear();
     for (const t of this.images.values()) this.compositor.deleteTexture(t);
     this.images.clear();
     for (const lut of this.luts.values()) if (lut) this.compositor.gl.deleteTexture(lut.tex);
@@ -211,12 +290,60 @@ export class MediaManager implements SceneResources {
     return tex;
   }
 
+  private async video(info: MediaInfo, layer: MediaLayer, previewLongSide: number, readerBudget: number): Promise<TextureInfo | null> {
+    // Decode no larger than the layer is drawn or the current preview quality requires.
+    const shownW = layer.width / Math.max(0.01, 1 - layer.crop.left - layer.crop.right);
+    const shownH = layer.height / Math.max(0.01, 1 - layer.crop.top - layer.crop.bottom);
+    const memoryScale = this.options.downsizeReaders ? Math.sqrt(readerBudget / (16 * info.width * info.height)) : Infinity;
+    const cap = Math.min(previewLongSide / Math.max(info.width, info.height), memoryScale);
+    const need = Math.min(1, cap, Math.max(shownW / info.width, shownH / info.height));
+    const decoder = this.androidDecoder(info);
+    let reader = this.readers.get(layer.elementId);
+    const desiredWidth = info.width * need;
+    const tooLarge = this.options.downsizeReaders && reader
+      && (reader.width > desiredWidth * 1.5 || reader.width > info.width * cap * 1.25);
+    if (!reader || reader.sourcePath !== info.path || reader.decoder !== decoder || tooLarge || desiredWidth > reader.width * 1.5) {
+      reader?.dispose();
+      const s = Math.min(1, cap, need * (reader && !tooLarge ? 1.25 : 1));
+      reader = new VideoReader(this.compositor, this.ctx, info, even(info.width * s), even(info.height * s), decoder);
+      this.readers.set(layer.elementId, reader);
+    }
+    reader.configureMemory(readerBudget);
+    reader.lastUsed = this.tick;
+    const texture = reader.textureAt(layer.sourceSeconds, layer.reversed && layer.sourceSeconds > layer.sourceInSourceSeconds);
+    if (!decoder) return texture;
+    const decoded = await texture.catch(() => null);
+    if (decoded) return decoded;
+    this.unavailableAndroidDecoders.add(info.path);
+    reader.dispose();
+    this.readers.delete(layer.elementId);
+    return this.video(info, layer, previewLongSide, readerBudget);
+  }
+
+  private androidDecoder(info: MediaInfo): AndroidDecoder | undefined {
+    if (!this.androidMediaCodec || this.unavailableAndroidDecoders.has(info.path)) return;
+    if (info.colorTransfer === "smpte2084" || info.colorTransfer === "arib-std-b67") return;
+    if (info.videoCodec === "h264") return "h264_mediacodec";
+    if (info.videoCodec === "hevc") return "hevc_mediacodec";
+  }
+
   /** Decode every frame a scene needs. */
-  async prepare(layers: MediaLayer[]): Promise<string[]> {
+  async prepare(layers: MediaLayer[], previewLongSide = Infinity): Promise<string[]> {
     this.tick++;
     this.frameTextures.clear();
     this.maskTextures.clear();
     const warnings: string[] = [];
+    const activeReaders = new Set<string>();
+    for (const layer of layers) {
+      const media = this.ctx.media[layer.mediaId];
+      if (media && media.kind !== "image" && layer.mediaKind !== "image") activeReaders.add(layer.elementId);
+      for (const ref of layer.subjectMasks) activeReaders.add(`${layer.elementId}:mask:${ref.maskMediaId}`);
+    }
+    const memoryBytes = this.options.readerMemoryBytes ?? DEFAULT_READER_MEMORY;
+    const readerBudget = memoryBytes / Math.max(1, activeReaders.size);
+    for (const [id, reader] of this.readers) {
+      if (!activeReaders.has(id)) reader.idle();
+    }
     // Subject masks: small grayscale videos read frame-exactly, like any other video.
     for (const layer of layers) {
       for (const ref of layer.subjectMasks) {
@@ -231,8 +358,9 @@ export class MediaManager implements SceneResources {
           reader = new VideoReader(this.compositor, this.ctx, info, even(info.width), even(info.height));
           this.readers.set(key, reader);
         }
+        reader.configureMemory(readerBudget);
         reader.lastUsed = this.tick;
-        const tex = await reader.textureAt(Math.floor(ref.maskSeconds * info.fps + 1e-3));
+        const tex = await reader.textureAt(ref.maskSeconds, layer.reversed && ref.maskSeconds > 0);
         if (tex) this.maskTextures.set(`${layer.elementId}:${ref.instanceId}`, tex);
       }
     }
@@ -246,21 +374,13 @@ export class MediaManager implements SceneResources {
         let tex: TextureInfo | null;
         if (layer.mediaKind === "image" || info.kind === "image") tex = await this.image(layer.mediaId, info);
         else {
-          // Decode no larger than the layer is drawn (never above source resolution).
-          const shownW = layer.width / Math.max(0.01, 1 - layer.crop.left - layer.crop.right);
-          const shownH = layer.height / Math.max(0.01, 1 - layer.crop.top - layer.crop.bottom);
-          const need = Math.min(1, Math.max(shownW / info.width, shownH / info.height));
-          let reader = this.readers.get(layer.elementId);
-          const desiredWidth = info.width * need;
-          const tooLarge = this.options.downsizeReaders && reader && reader.width > desiredWidth * 1.75;
-          if (!reader || tooLarge || desiredWidth > reader.width * 1.5) {
-            reader?.dispose();
-            const s = Math.min(1, need * (reader && !tooLarge ? 1.25 : 1));
-            reader = new VideoReader(this.compositor, this.ctx, info, even(info.width * s), even(info.height * s));
-            this.readers.set(layer.elementId, reader);
+          const proxy = info.editingProxy;
+          tex = null;
+          if (proxy && !this.unavailableProxies.has(proxy.path) && fs.existsSync(proxy.path)) {
+            tex = await this.video({ ...info, ...proxy, videoCodec: "h264" }, layer, previewLongSide, readerBudget).catch(() => null);
+            if (!tex) this.unavailableProxies.add(proxy.path);
           }
-          reader.lastUsed = this.tick;
-          tex = await reader.textureAt(Math.floor(layer.sourceSeconds * info.fps + 1e-3));
+          tex ??= await this.video(info, layer, previewLongSide, readerBudget);
         }
         if (tex) this.frameTextures.set(layer.elementId, tex);
         else warnings.push(`Could not decode a frame for ${layer.elementId}`);
@@ -268,12 +388,15 @@ export class MediaManager implements SceneResources {
         warnings.push(`Decode failed for ${layer.elementId}: ${(e as Error).message}`);
       }
     }
-    // Drop readers that have not been needed for a while.
-    for (const [id, r] of this.readers) {
-      if (this.tick - r.lastUsed > 90 || (this.readers.size > 12 && this.tick - r.lastUsed > 2)) {
-        r.dispose();
-        this.readers.delete(id);
-      }
+    // Leave spare GPU memory for the compositor instead of holding textures across cuts.
+    let textureBytes = 0;
+    const inactive = [...this.readers].filter(([id]) => !activeReaders.has(id)).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    for (const r of this.readers.values()) if (r.texture) textureBytes += r.frameBytes;
+    for (const [id, r] of inactive) {
+      if (this.tick - r.lastUsed <= 90 && this.readers.size <= 12 && textureBytes <= memoryBytes / 2) continue;
+      if (r.texture) textureBytes -= r.frameBytes;
+      r.dispose();
+      this.readers.delete(id);
     }
     return warnings;
   }

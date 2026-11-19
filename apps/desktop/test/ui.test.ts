@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { level, tempWorkspace, testMedia } from "../../../packages/engine/test/media.js";
+import { tempWorkspace, testMedia } from "../../../packages/engine/test/media.js";
 import { AppHarness, clickButton, connectAgent, setSlider } from "./harness.js";
 
 /**
@@ -32,7 +32,9 @@ describe("desktop app", () => {
     await app.waitFor(`document.querySelector(".home") && document.body.textContent.includes("No projects yet")`);
     expect(await app.eval(clickButton("New project", ".titlebar"))).toBe(true);
     await app.waitFor(`!!document.querySelector(".editor .timeline")`);
-    expect(await app.eval(`document.querySelector(".inspector .kind")?.textContent`)).toBe("Project");
+    expect(await app.eval(`document.querySelector(".inspector-empty strong")?.textContent`)).toBe("Select a clip");
+    expect(await app.eval(clickButton("Project settings", ".inspector-empty"))).toBe(true);
+    await app.waitFor(`document.querySelector(".inspector .pane")?.textContent.includes("Canvas")`);
   });
 
   it("shows media, clips and agent edits live", async () => {
@@ -56,12 +58,17 @@ describe("desktop app", () => {
   });
 
   it("draws the composition in the viewport", async () => {
-    await new Promise((r) => setTimeout(r, 1500));
+    await app.waitFor(`(() => {
+      const gl = document.querySelector("canvas.preview")?.getContext("webgl2");
+      if (!gl || !gl.drawingBufferWidth || !gl.drawingBufferHeight) return false;
+      const pixel = new Uint8Array(4);
+      // Sample the actual preview. Its position shifts when the library or inspector is open.
+      gl.readPixels(Math.floor(gl.drawingBufferWidth / 2), Math.floor(gl.drawingBufferHeight / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      return pixel[0] + pixel[1] + pixel[2] > 80;
+    })()`, 20_000);
     const file = path.join(ws, "editor.png");
     await shot("editor");
     expect(fs.statSync(file).size).toBeGreaterThan(10_000);
-    // The middle of the window is the 9:16 preview of the colorful test pattern, not the dark UI.
-    expect(level(file, "center")).toBeGreaterThan(40);
   });
 
   it("edits through the inspector as one undo step per gesture", async () => {
@@ -78,7 +85,7 @@ describe("desktop app", () => {
   });
 
   it("shows rendered previews on effect, transition, filter and LUT tiles, animated on hover", async () => {
-    await app.eval(clickButton("Effects", ".dock .tabs"));
+    await app.eval(clickButton("Effects", ".tool-rail"));
     for (const [chip, kind] of [["Effects", "effect"], ["Transitions", "transition"], ["Filters", "filter"], ["LUTs", "lut"]] as const) {
       expect(await app.eval(clickButton(chip, ".dock .chips"))).toBe(true);
       // The first tiles get a still rendered by the compositor (a JPEG data URL).

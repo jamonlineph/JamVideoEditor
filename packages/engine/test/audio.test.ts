@@ -89,6 +89,10 @@ describe("audio mix", () => {
       expect(curveMix.warnings).toEqual([]);
       expect(rms(curveMix.samples, 0.5, dur - 0.5)).toBeCloseTo(SINE_RMS, 1);
       expect(rms(curveMix.samples, dur + 0.2, dur + 1)).toBeLessThan(0.001);
+      const reversedWindow = await renderAudioMix(muted([music]), { startSeconds: 1, endSeconds: 2, playbackWindow: true });
+      expect(reversedWindow.warnings).toEqual([]);
+      const difference = reversedWindow.samples.map((sample, i) => sample - curveMix.samples[i + 96_000]);
+      expect(rms(difference, 0, 1)).toBeLessThan(0.001);
       host.undo("t");
     } finally {
       host.undo("t");
@@ -106,6 +110,25 @@ describe("audio mix", () => {
       const diff = full.samples.map((v, i) => v - voiceOnly.samples[i]); // what is left is the (ducked) music
       expect(rms(diff, 1, 2.5)).toBeCloseTo(SINE_RMS * Math.pow(10, -12 / 20), 2);
       expect(rms(diff, 5, 8)).toBeCloseTo(SINE_RMS, 2);
+    } finally {
+      host.undo("t");
+    }
+  });
+
+  it("mixes playback windows at the same sample positions through fades, ducking, and speed changes", async () => {
+    host.mutate("window test", "t", (ctx) => {
+      setSpeed(ctx, ctx.draft.elements[clipA], 2);
+      setFade(ctx, ctx.draft.elements[clipA], { fadeInSeconds: 2 });
+      setDucking(ctx, ctx.draft.elements[music], { enabled: true, amountDb: -12, attackSeconds: 0.1, releaseSeconds: 0.2 });
+    });
+    try {
+      const full = await renderAudioMix(host.project);
+      const window = await renderAudioMix(host.project, { startSeconds: 1.75, endSeconds: 3.25, playbackWindow: true });
+      expect(window.warnings).toEqual([]);
+      expect(window.samples.length).toBe(144_000);
+      const offset = 1.75 * 48_000 * 2;
+      const difference = window.samples.map((sample, i) => sample - full.samples[i + offset]);
+      expect(rms(difference, 0, 1.5)).toBeLessThan(0.003);
     } finally {
       host.undo("t");
     }

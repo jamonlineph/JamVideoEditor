@@ -207,12 +207,14 @@ export class Compositor {
   /** Upload opaque RGBA pixels (row 0 = top), reusing `existing` when the size matches. */
   uploadPixels(existing: TextureInfo | null, data: Uint8Array, width: number, height: number): TextureInfo {
     const gl = this.gl;
-    const info = existing && existing.width === width && existing.height === height ? existing : { tex: this.newTexture(), width, height };
+    const reuse = existing?.width === width && existing.height === height;
+    const info = reuse ? existing : { tex: this.newTexture(), width, height };
     if (existing && info !== existing) gl.deleteTexture(existing.tex);
     gl.activeTexture(gl.TEXTURE0 + Compositor.SCRATCH_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, info.tex);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    if (reuse) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
     return info;
   }
 

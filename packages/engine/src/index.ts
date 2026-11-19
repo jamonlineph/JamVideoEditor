@@ -3,6 +3,7 @@ export * from "./library.js";
 export * from "./projectStore.js";
 export * from "./lock.js";
 export * from "./media/probe.js";
+export * from "./media/editingCache.js";
 export * from "./inbox.js";
 export * from "./host.js";
 export * from "./ffmpeg.js";

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { compositionDuration, mainTrack, clipBoundaries } from "@openedits/core";
 import { FILE_MANAGER, live, selectedElements, useLive, WEB } from "./live.js";
-import { ui, useUi } from "./uiStore.js";
-import { Dock, importFiles } from "./Dock.js";
+import { ui, useUi, type UiState } from "./uiStore.js";
+import { Dock, DOCK_LABEL, DOCK_RAIL, importFiles } from "./Dock.js";
 import { Viewport, type ViewportApi } from "./Viewport.js";
 import { Inspector } from "./Inspector.js";
 import { Timeline } from "./Timeline.js";
 import { actionFor, type ShortcutMapId } from "./shortcuts.js";
 import { recorder } from "./recorder.js";
+import { EditorIcon } from "./EditorIcon.js";
+import { EditingCacheDialog } from "./EditingCacheDialog.js";
 
 const compactEditor = "(max-width: 1080px)";
 type SidePanel = "library" | "inspector";
@@ -17,6 +19,7 @@ export function Editor() {
   const showGuides = useUi("showGuides");
   const recordingTools = useUi("recorder");
   const exportOpen = useUi("exportOpen");
+  const dockTab = useUi("dockTab");
   const project = s.project!;
   const viewport = useRef<ViewportApi>(null);
   const [shortcutMap, setShortcutMap] = useState<ShortcutMapId>("edits");
@@ -27,6 +30,7 @@ export function Editor() {
   const inspectorOpen = compact ? compactPanel === "inspector" : widePanels.inspector;
   const [job, setJob] = useState<ExportJob | null>(null);
   const [exportPending, setExportPending] = useState(false);
+  const [cacheOpen, setCacheOpen] = useState(false);
   const libraryToggle = useRef<HTMLButtonElement>(null);
   const exportActive = job?.status === "running" || job?.status === "queued";
   const seek = useCallback((time: number) => viewport.current?.player?.seek(time), []);
@@ -39,9 +43,14 @@ export function Editor() {
     return () => media.removeEventListener("change", update);
   }, []);
 
-  function togglePanel(panel: SidePanel) {
-    if (compact) setCompactPanel((current) => current === panel ? null : panel);
-    else setWidePanels((current) => ({ ...current, [panel]: !current[panel] }));
+  function showPanel(panel: SidePanel, open: boolean) {
+    if (compact) setCompactPanel((current) => open ? panel : current === panel ? null : current);
+    else setWidePanels((current) => ({ ...current, [panel]: open }));
+  }
+
+  function openTool(tab: UiState["dockTab"], toggle = false) {
+    ui.set({ dockTab: tab });
+    showPanel("library", !(toggle && libraryOpen && dockTab === tab));
   }
 
   const runExport = async (tool: "export" | "cancelRender", args: Record<string, unknown>) => {
@@ -103,7 +112,7 @@ export function Editor() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target instanceof Element ? e.target : null;
-      if (ui.get().exportOpen || e.defaultPrevented) return;
+      if (e.defaultPrevented || document.querySelector("dialog[open]")) return;
       if (e.key === "Escape") setCompactPanel(null);
       if (t?.closest("input, textarea, select, [contenteditable=true]")) return;
       if ((e.key === " " || e.key === "Enter") && t?.closest("button, summary")) return;
@@ -198,8 +207,8 @@ export function Editor() {
     <>
       <div className="editor-shell">
         <header className="titlebar editor-titlebar">
-          <button className="ghost back-projects" onClick={() => void live.run("closeProject")} aria-label="Back to projects" title="Back to projects">
-            ‹ <span>Projects</span>
+          <button className="ghost icon back-projects" onClick={() => void live.run("closeProject")} aria-label="Back to projects" title="Back to projects">
+            <EditorIcon name="back" />
           </button>
           <div className="project-heading">
             <span className="name" title={project.name}>{project.name}</span>
@@ -208,54 +217,64 @@ export function Editor() {
           <div className="spacer" />
           <span className="connection-status" role="status" title={s.lastChange?.label}>
             <i className={`status-dot ${s.connected ? "" : "off"}`} />
-            <span>{!s.connected ? "Reconnecting" : agentActive ? `${s.lastChange!.source.replace(/^mcp:/, "")} is editing` : "Engine connected"}</span>
+            <span>{!s.connected ? "Reconnecting" : agentActive ? `${s.lastChange!.source.replace(/^mcp:/, "")} is editing` : "Connected"}</span>
           </span>
-          <button className="primary" onClick={() => ui.set({ exportOpen: true })}>
-            {exportActive ? `Export ${Math.round(job.progress * 100)}%` : "Export"}
-          </button>
-        </header>
-        <nav className="editor-toolbar" aria-label="Editor tools">
-          <div className="segmented">
-            <button ref={libraryToggle} className={libraryOpen ? "on" : ""} aria-pressed={libraryOpen} aria-controls="editor-library" onClick={() => togglePanel("library")}>Library</button>
-            <button className={inspectorOpen ? "on" : ""} aria-pressed={inspectorOpen} aria-controls="editor-inspector" onClick={() => togglePanel("inspector")}>Inspector</button>
-          </div>
-          <div className="editor-history">
-            <button className="icon ghost" aria-label="Undo" title="Undo" onClick={() => void live.run("undo")}>↶</button>
-            <button className="icon ghost" aria-label="Redo" title="Redo" onClick={() => void live.run("redo")}>↷</button>
-          </div>
-          <div className="toolbar-space" />
-          <select value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })} aria-label="Canvas aspect ratio" title="Canvas aspect ratio">
-            {["9:16", "16:9", "1:1", "4:5"].map((a) => <option key={a}>{a}</option>)}
-          </select>
-          <details className="editor-more" onBlur={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
-          }} onKeyDown={(e) => {
-            if (e.key !== "Escape" || !e.currentTarget.open) return;
-            e.preventDefault();
-            e.currentTarget.open = false;
-            e.currentTarget.querySelector("summary")?.focus();
-          }}>
-            <summary>Tools</summary>
-            <div className="editor-menu">
-              <button aria-pressed={showGuides} onClick={() => ui.set({ showGuides: !showGuides })}>Grid guides</button>
-              <button aria-pressed={Boolean(s.appState?.teleprompterOpen)} onClick={(e) => {
-                e.currentTarget.closest("details")!.open = false;
-                setCompactPanel(null);
-                void live.run("openTeleprompter", { open: !s.appState?.teleprompterOpen });
-              }}>Teleprompter</button>
-              <button aria-pressed={recordingTools} onClick={(e) => {
-                e.currentTarget.closest("details")!.open = false;
-                setCompactPanel(null);
-                ui.set({ recorder: !recordingTools });
-              }}>Voiceover</button>
+          <div className="editor-header-actions">
+            <select className="canvas-format" value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })} aria-label="Canvas aspect ratio" title="Canvas aspect ratio">
+              {[...new Set([project.canvas.aspectRatio, "9:16", "16:9", "1:1", "4:5"])].map((a) => <option key={a}>{a}</option>)}
+            </select>
+            <ToolSearch onOpen={openTool} />
+            <div className="editor-layout-actions">
+              <button ref={libraryToggle} className={libraryOpen ? "icon on" : "icon ghost"} title="Library" aria-label="Library" aria-pressed={libraryOpen} aria-controls="editor-library" onClick={() => showPanel("library", !libraryOpen)}><EditorIcon name="library" /></button>
+              <button className={inspectorOpen ? "icon on" : "icon ghost"} title="Inspector" aria-label="Inspector" aria-pressed={inspectorOpen} aria-controls="editor-inspector" onClick={() => showPanel("inspector", !inspectorOpen)}><EditorIcon name="inspector" /></button>
             </div>
-          </details>
-        </nav>
+            <details className="editor-more" onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
+            }} onKeyDown={(e) => {
+              if (e.key !== "Escape" || !e.currentTarget.open) return;
+              e.preventDefault();
+              e.currentTarget.open = false;
+              e.currentTarget.querySelector("summary")?.focus();
+            }}>
+              <summary title="Editor tools" aria-label="Editor tools"> ••• </summary>
+              <div className="editor-menu">
+                {WEB && <button onClick={(e) => {
+                  e.currentTarget.closest("details")!.open = false;
+                  window.dispatchEvent(new Event("openedits-mcp"));
+                }}>Connect AI</button>}
+                <button aria-pressed={showGuides} onClick={() => ui.set({ showGuides: !showGuides })}>Grid guides</button>
+                <button aria-pressed={Boolean(s.appState?.teleprompterOpen)} onClick={(e) => {
+                  e.currentTarget.closest("details")!.open = false;
+                  setCompactPanel(null);
+                  void live.run("openTeleprompter", { open: !s.appState?.teleprompterOpen });
+                }}>Teleprompter</button>
+                <button onClick={(e) => {
+                  e.currentTarget.closest("details")!.open = false;
+                  setCacheOpen(true);
+                }}>Editing cache</button>
+              </div>
+            </details>
+            <button className="primary editor-export" onClick={() => ui.set({ exportOpen: true })}>
+              <EditorIcon name="export" /> {exportActive ? `Export ${Math.round(job.progress * 100)}%` : "Export"}
+            </button>
+          </div>
+        </header>
         <div className={`editor${libraryOpen ? " with-library" : ""}${inspectorOpen ? " with-inspector" : ""}`}>
-          <aside id="editor-library" className="editor-library" aria-label="Library" hidden={!libraryOpen}><Dock /></aside>
+          <nav className="tool-rail" aria-label="Editor tools">
+            {DOCK_RAIL.map((tool) => {
+              const active = libraryOpen && (dockTab === tool || (tool === "filters" && dockTab === "luts"));
+              return <button key={tool} className={active ? "selected-tool" : "ghost"} title={DOCK_LABEL[tool]} aria-label={DOCK_LABEL[tool]} aria-pressed={active} aria-controls="editor-library" onClick={() => openTool(tool, true)}><EditorIcon name={tool} /><span>{DOCK_LABEL[tool]}</span></button>;
+            })}
+            <button className={recordingTools ? "selected-tool" : "ghost"} title="Voiceover" aria-label="Voiceover" aria-pressed={recordingTools} onClick={() => {
+              setCompactPanel(null);
+              ui.set({ recorder: !recordingTools });
+            }}><EditorIcon name="voice" /><span>Voiceover</span></button>
+          </nav>
+          <aside id="editor-library" className="editor-library" aria-label="Library" hidden={!libraryOpen}>
+            {libraryOpen && <Dock onClose={() => showPanel("library", false)} />}
+          </aside>
           <Viewport ref={viewport} onOpenLibrary={() => {
-            if (compact) setCompactPanel("library");
-            else setWidePanels((current) => ({ ...current, library: true }));
+            openTool("media");
             libraryToggle.current?.focus();
           }} />
           <aside id="editor-inspector" className="editor-inspector" aria-label="Inspector" hidden={!inspectorOpen}>
@@ -266,7 +285,44 @@ export function Editor() {
         </div>
       </div>
       {exportOpen && <ExportDialog job={job} pending={exportPending} runJob={runExport} onClose={() => ui.set({ exportOpen: false })} />}
+      <EditingCacheDialog open={cacheOpen} onClose={() => setCacheOpen(false)} />
     </>
+  );
+}
+
+function ToolSearch({ onOpen }: { onOpen: (tab: UiState["dockTab"]) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const available = [...DOCK_RAIL, "luts" as const].filter((tool) => DOCK_LABEL[tool].toLowerCase().includes(query.toLowerCase().trim()));
+  function pick(tab: UiState["dockTab"]) {
+    onOpen(tab);
+    setQuery("");
+    setOpen(false);
+  }
+  return (
+    <div className="editor-tool-search" onBlur={(e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+    }}>
+      <EditorIcon name="search" />
+      <input
+        type="search"
+        placeholder="Find a tool"
+        aria-label="Find a tool"
+        aria-expanded={open}
+        aria-controls="editor-tool-results"
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+          if (e.key === "Enter" && open && available[0]) pick(available[0]);
+        }}
+      />
+      <div id="editor-tool-results" className="editor-menu" hidden={!open}>
+        {available.map((tool) => <button key={tool} onClick={() => pick(tool)}><EditorIcon name={tool === "luts" ? "filters" : tool} /> {DOCK_LABEL[tool]}</button>)}
+        {!available.length && <div className="muted small">No tools found</div>}
+      </div>
+    </div>
   );
 }
 
@@ -280,6 +336,7 @@ function ExportDialog({ job, pending, runJob, onClose }: {
 }) {
   const s = useLive();
   const settings = s.project!.exportSettings;
+  const [preset, setPreset] = useState<"custom" | "fast-720p" | "fast-1080p">("custom");
   const dialog = useRef<HTMLDialogElement>(null);
   const working = job?.status === "queued" || job?.status === "running";
   useEffect(() => {
@@ -290,6 +347,15 @@ function ExportDialog({ job, pending, runJob, onClose }: {
     <dialog className="dialog export-dialog" ref={dialog} onClose={onClose} aria-labelledby="export-title">
       <h3 id="export-title">Export video</h3>
       <fieldset disabled={working || pending}>
+        <label className="field wide">
+          <span>Preset</span>
+          <select value={preset} onChange={(e) => setPreset(e.target.value as typeof preset)}>
+            <option value="custom">Project settings</option>
+            <option value="fast-720p">Fast Export · 720p</option>
+            <option value="fast-1080p">Fast Export · 1080p</option>
+          </select>
+        </label>
+        {preset === "custom" ? <>
         <label className="field wide">
           <span>Resolution</span>
           <select value={settings.resolution} onChange={(e) => set({ resolution: e.target.value })}>
@@ -322,6 +388,7 @@ function ExportDialog({ job, pending, runJob, onClose }: {
             ))}
           </select>
         </label>
+        </> : <p className="muted small">H.264 MP4 at 30 fps with faster encoding.</p>}
         <div className="field wide">
           <span>Captions</span>
           <label className="row">
@@ -340,7 +407,7 @@ function ExportDialog({ job, pending, runJob, onClose }: {
       <div className="row export-actions">
         <button onClick={() => dialog.current?.close()}>{working ? "Hide" : "Close"}</button>
         {working && <button className="danger" disabled={pending} onClick={() => void runJob("cancelRender", { jobId: job.jobId })}>Cancel export</button>}
-        {!working && <button className={job?.status === "done" ? "" : "primary"} disabled={pending} onClick={() => void runJob("export", {})}>Export</button>}
+        {!working && <button className={job?.status === "done" ? "" : "primary"} disabled={pending} onClick={() => void runJob("export", preset === "custom" ? {} : { preset })}>Export</button>}
         {job?.status === "done" && job.output && <button className="primary" onClick={() => void import("electron").then(({ ipcRenderer }) => ipcRenderer.invoke("reveal", job.output!.path)).catch((error: Error) => live.toast("error", error.message))}>{WEB ? "Download" : `Show in ${FILE_MANAGER}`}</button>}
       </div>
     </dialog>
