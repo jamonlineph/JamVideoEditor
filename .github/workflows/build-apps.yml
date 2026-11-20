@@ -30,6 +30,11 @@ jobs:
           cache: npm
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb espeak-ng
       - run: npm ci
+      - name: Configure the Electron sandbox for the test runner
+        run: |
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Build and test (the desktop tests drive the real app in a virtual display)
         run: xvfb-run -a npm test
 

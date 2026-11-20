@@ -37,7 +37,9 @@ type Json = Record<string, any>;
 
 async function call(name: string, args: Json = {}): Promise<Json> {
   called.add(name);
-  const res = unwrap(await client.callTool({ name, arguments: args }));
+  const waitSeconds = args.waitSeconds ?? args.wait_seconds;
+  const options = typeof waitSeconds === "number" ? { timeout: (waitSeconds + 30) * 1000 } : undefined;
+  const res = unwrap(await client.callTool({ name, arguments: args }, undefined, options));
   if (!res.ok) throw new Error(`${name} failed: ${JSON.stringify(res.value)}`);
   if (host.isOpen) expect(validateProject(host.project)).toEqual([]);
   return res.value as Json;
