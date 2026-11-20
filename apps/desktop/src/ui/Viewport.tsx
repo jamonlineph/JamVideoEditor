@@ -40,7 +40,7 @@ function withTextStyleDraft(project: Project, draft: UiState["textStyleDraft"]):
   });
 }
 
-export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void; onOpenEditingCache: () => void }>(function Viewport({ onOpenLibrary, onOpenEditingCache }, ref) {
+export const Viewport = forwardRef<ViewportApi, { blocked: boolean; onImportMedia: () => void; onOpenEditingCache: () => void }>(function Viewport({ blocked, onImportMedia, onOpenEditingCache }, ref) {
   const s = useLive();
   const playing = useUi("playing");
   const loop = useUi("loop");
@@ -220,7 +220,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void; onO
     engine?.player.seek(target);
   }
   return (
-    <section className="stage" aria-label="Preview">
+    <section className="stage" aria-label="Preview" inert={blocked}>
       <div className="preview-bar">
         <strong>Preview</strong>
         <div className="preview-controls">
@@ -250,7 +250,7 @@ export const Viewport = forwardRef<ViewportApi, { onOpenLibrary: () => void; onO
         {!duration && !showRecorder && !s.appState?.teleprompterOpen && (
           <div className="preview-empty">
             <span>Your timeline is empty</span>
-            <button className="ghost" onClick={onOpenLibrary}>Open library</button>
+            <button className="ghost" disabled={!s.connected} onClick={onImportMedia}>Import media</button>
           </div>
         )}
         {showGuides && <div className="guides" style={{ width: box.w, height: box.h, backgroundSize: `${box.w / 10}px ${box.h / 10}px` }} />}

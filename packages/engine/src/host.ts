@@ -406,7 +406,7 @@ export class EngineHost extends EventEmitter {
 
   /** Probe files and add them to the media panel (deduplicated by path). */
   async importMedia(paths: string[], opts: { folderId?: string; source?: string } = {}): Promise<{ assets: MediaAsset[]; added: string[]; existing: string[] }> {
-    this.requireOpen();
+    const target = this.requireOpen();
     if (paths.length === 0) throw new EditError("INVALID_ARGUMENT", "No paths given");
     const resolved = paths.map((p) => path.resolve(expandHome(p)));
     const byPath = new Map(Object.values(this.project.media).map((m) => [m.path, m]));
@@ -433,6 +433,7 @@ export class EngineHost extends EventEmitter {
       toAdd.push(asset);
       assets.push(asset);
     }
+    if (this.current !== target) throw new EditError("INVALID_ARGUMENT", "The project changed during import. Reopen it to import these files.");
     if (toAdd.length) {
       if (opts.folderId && !this.project.mediaFolders.some((f) => f.id === opts.folderId)) throw new EditError("INVALID_ARGUMENT", `No media folder ${opts.folderId}`);
       this.mutate(`Import ${toAdd.length} media file${toAdd.length > 1 ? "s" : ""}`, opts.source ?? "engine", (ctx) => addMediaAssets(ctx, toAdd), { skipFinalize: true });

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -141,6 +141,7 @@ function buildMenu() {
       // Undo/redo go to the engine (shared with agents), not to the text fields' native undo.
       { label: "Edit", submenu: [{ role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
       { label: "View", submenu: [{ role: "reload" }, { role: "toggleDevTools" }, { type: "separator" }, { role: "togglefullscreen" }] },
+      { label: "Connections", submenu: [{ label: "MCP Settings…", click: send("mcpSettings") }] },
       { role: "windowMenu" },
     ]),
   );
@@ -150,8 +151,8 @@ async function createWindow(info: EngineInfo) {
   win = new BrowserWindow({
     width: 1480,
     height: 920,
-    minWidth: 1100,
-    minHeight: 700,
+    minWidth: 640,
+    minHeight: 460,
     show: !TEST,
     backgroundColor: "#0d0e11",
     // The app draws its own title bar. macOS keeps its traffic lights inset; Windows gets native
@@ -205,6 +206,7 @@ ipcMain.handle("ensure-engine", async () => {
   const info = await ensureEngine();
   return { port: info.port, token: info.token };
 });
+ipcMain.handle("copy-text", (_e, value: string) => clipboard.writeText(value));
 ipcMain.handle("reveal", (_e, file: string) => shell.showItemInFolder(file));
 
 /** Test hook: the test runner drives the window over the Node IPC channel. */

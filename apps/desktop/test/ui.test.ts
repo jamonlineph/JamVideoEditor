@@ -30,11 +30,29 @@ describe("desktop app", () => {
 
   it("opens on the home screen and creates a project from the UI", async () => {
     await app.waitFor(`document.querySelector(".home") && document.body.textContent.includes("No projects yet")`);
-    expect(await app.eval(clickButton("New project", ".titlebar"))).toBe(true);
+    expect(await app.eval(clickButton("New project", ".home-heading"))).toBe(true);
+    await app.waitFor(`!!document.querySelector(".setup-dialog[open]")`);
+    expect(await app.eval(clickButton("Create project", ".setup-dialog"))).toBe(true);
     await app.waitFor(`!!document.querySelector(".editor .timeline")`);
     expect(await app.eval(`document.querySelector(".inspector-empty strong")?.textContent`)).toBe("Select a clip");
     expect(await app.eval(clickButton("Project settings", ".inspector-empty"))).toBe(true);
     await app.waitFor(`document.querySelector(".inspector .pane")?.textContent.includes("Canvas")`);
+  });
+
+  it("returns to projects without closing the live edit and exposes MCP settings", async () => {
+    const id = await app.eval<string>(`window.openedits.live.state.project.id`);
+    expect(await app.eval(clickButton("Home", ".editor-titlebar"))).toBe(true);
+    await app.waitFor(`!!document.querySelector(".project-card")`);
+    expect(await app.eval(`window.openedits.live.state.appState.openProjectId`)).toBe(id);
+    expect(await app.eval(clickButton("MCP settings", ".home-titlebar"))).toBe(true);
+    await app.waitFor(`document.querySelector("#mcp-url")?.value.endsWith("/mcp")`);
+    expect(await app.eval(`document.querySelector(".mcp-config").value.includes("Bearer ••••••••")`)).toBe(true);
+    expect(await app.eval(clickButton("Show token", ".mcp-dialog"))).toBe(true);
+    await app.waitFor(`JSON.parse(document.querySelector(".mcp-config").value).mcpServers.jamvideoeditor.headers.Authorization.startsWith("Bearer ") && !document.querySelector(".mcp-config").value.includes("••••••••")`);
+    await app.eval(`document.querySelector('button[aria-label="Close MCP settings"]').click()`);
+    expect(await app.eval(clickButton("Resume editing", ".resume-project"))).toBe(true);
+    await app.waitFor(`!!document.querySelector(".editor .timeline")`);
+    expect(await app.eval(`window.openedits.live.state.project.id`)).toBe(id);
   });
 
   it("shows media, clips and agent edits live", async () => {
