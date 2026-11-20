@@ -184,6 +184,7 @@ export const projectTools = [
       for (const f of files) if (!fs.existsSync(f)) throw new EditError("FILE_NOT_FOUND", `File not found: ${f}`, { path: f });
       const p = ctx.host.newProject({ name: a.name ?? path.parse(files[0]).name, canvas: a.canvas });
       const imported = await ctx.host.importMedia(files, { source: ctx.source });
+      if (ctx.host.appState.openProjectId !== p.id) throw new EditError("INVALID_ARGUMENT", "The project changed before the imported media could be placed on the timeline.");
       const res = mutate(ctx, "Add files to timeline", (c) => {
         for (const asset of imported.assets) addMediaToTimeline(c, c.draft.media[asset.id], {});
         if (a.brief) setBrief(c, a.brief);

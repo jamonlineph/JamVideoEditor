@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { compositionDuration, mainTrack, clipBoundaries } from "@openedits/core";
 import { FILE_MANAGER, live, selectedElements, useLive, WEB } from "./live.js";
 import { ui, useUi, type UiState } from "./uiStore.js";
@@ -11,10 +11,10 @@ import { recorder } from "./recorder.js";
 import { EditorIcon } from "./EditorIcon.js";
 import { EditingCacheDialog } from "./EditingCacheDialog.js";
 
-const compactEditor = "(max-width: 1080px)";
+const compactEditor = "(max-width: 1000px)";
 type SidePanel = "library" | "inspector";
 
-export function Editor() {
+export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: () => void }) {
   const s = useLive();
   const showGuides = useUi("showGuides");
   const recordingTools = useUi("recorder");
@@ -32,6 +32,8 @@ export function Editor() {
   const [exportPending, setExportPending] = useState(false);
   const [cacheOpen, setCacheOpen] = useState(false);
   const libraryToggle = useRef<HTMLButtonElement>(null);
+  const inspectorToggle = useRef<HTMLButtonElement>(null);
+  const recorderBusy = useSyncExternalStore(recorder.subscribe, () => recorder.state.phase !== "idle");
   const exportActive = job?.status === "running" || job?.status === "queued";
   const seek = useCallback((time: number) => viewport.current?.player?.seek(time), []);
 
@@ -53,6 +55,11 @@ export function Editor() {
     showPanel("library", !(toggle && libraryOpen && dockTab === tab));
   }
 
+  function importMedia() {
+    openTool("media");
+    void importFiles().catch((error: Error) => live.toast("error", error.message));
+  }
+
   const runExport = async (tool: "export" | "cancelRender", args: Record<string, unknown>) => {
     setExportPending(true);
     try {
@@ -66,12 +73,6 @@ export function Editor() {
   useEffect(() => {
     void live.call<{ shortcutMap: ShortcutMapId }>("getSettings").then((r) => setShortcutMap(r.shortcutMap)).catch(() => {});
     ui.set({ playhead: s.appState?.playheadSeconds ?? 0 });
-    // The engine asks this window to record voiceovers for agents (start/stopVoiceoverRecording).
-    live.onUi(async (command, args) => {
-      if (command === "startRecording") return recorder.start(args as { start?: number; preRollSeconds?: number });
-      if (command === "stopRecording") return recorder.stop();
-      throw new Error(`Unknown request ${command}`);
-    });
     return () => ui.set({ exportOpen: false, recorder: false });
   }, []);
 
@@ -207,8 +208,11 @@ export function Editor() {
     <>
       <div className="editor-shell">
         <header className="titlebar editor-titlebar">
-          <button className="ghost icon back-projects" onClick={() => void live.run("closeProject")} aria-label="Back to projects" title="Back to projects">
-            <EditorIcon name="back" />
+          <button className="ghost back-projects" disabled={recorderBusy} onClick={() => {
+            viewport.current?.player?.pause();
+            onHome();
+          }} aria-label="Home · Projects" title={recorderBusy ? "Finish the voiceover to return to Home" : "Home · Projects"}>
+            <EditorIcon name="home" /><span>Home</span>
           </button>
           <div className="project-heading">
             <span className="name" title={project.name}>{project.name}</span>
@@ -220,14 +224,11 @@ export function Editor() {
             <span>{!s.connected ? "Reconnecting" : agentActive ? `${s.lastChange!.source.replace(/^mcp:/, "")} is editing` : "Connected"}</span>
           </span>
           <div className="editor-header-actions">
-            <select className="canvas-format" value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })} aria-label="Canvas aspect ratio" title="Canvas aspect ratio">
-              {[...new Set([project.canvas.aspectRatio, "9:16", "16:9", "1:1", "4:5"])].map((a) => <option key={a}>{a}</option>)}
-            </select>
-            <ToolSearch onOpen={openTool} />
             <div className="editor-layout-actions">
-              <button ref={libraryToggle} className={libraryOpen ? "icon on" : "icon ghost"} title="Library" aria-label="Library" aria-pressed={libraryOpen} aria-controls="editor-library" onClick={() => showPanel("library", !libraryOpen)}><EditorIcon name="library" /></button>
-              <button className={inspectorOpen ? "icon on" : "icon ghost"} title="Inspector" aria-label="Inspector" aria-pressed={inspectorOpen} aria-controls="editor-inspector" onClick={() => showPanel("inspector", !inspectorOpen)}><EditorIcon name="inspector" /></button>
+              <button ref={libraryToggle} className={libraryOpen ? "on" : "ghost"} title="Library" aria-label="Library" aria-pressed={libraryOpen} aria-controls="editor-library" onClick={() => showPanel("library", !libraryOpen)}><EditorIcon name="library" /><span>Library</span></button>
+              <button ref={inspectorToggle} className={inspectorOpen ? "on" : "ghost"} title="Inspector" aria-label="Inspector" aria-pressed={inspectorOpen} aria-controls="editor-inspector" onClick={() => showPanel("inspector", !inspectorOpen)}><EditorIcon name="inspector" /><span>Inspector</span></button>
             </div>
+            <button className="ghost editor-mcp" aria-haspopup="dialog" aria-label="MCP settings" title="MCP settings" onClick={onOpenMcp}><EditorIcon name="plug" /><span>MCP</span></button>
             <details className="editor-more" onBlur={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
             }} onKeyDown={(e) => {
@@ -236,12 +237,13 @@ export function Editor() {
               e.currentTarget.open = false;
               e.currentTarget.querySelector("summary")?.focus();
             }}>
-              <summary title="Editor tools" aria-label="Editor tools"> ••• </summary>
+              <summary title="Editor tools" aria-label="Editor tools"><EditorIcon name="more" /></summary>
               <div className="editor-menu">
-                {WEB && <button onClick={(e) => {
-                  e.currentTarget.closest("details")!.open = false;
-                  window.dispatchEvent(new Event("openedits-mcp"));
-                }}>Connect AI</button>}
+                <label className="editor-format">Canvas aspect ratio
+                  <select value={project.canvas.aspectRatio} onChange={(e) => void live.run("setCanvas", { aspectRatio: e.target.value })}>
+                    {[...new Set([project.canvas.aspectRatio, "9:16", "16:9", "1:1", "4:5"])].map((a) => <option key={a}>{a}</option>)}
+                  </select>
+                </label>
                 <button aria-pressed={showGuides} onClick={() => ui.set({ showGuides: !showGuides })}>Grid guides</button>
                 <button aria-pressed={Boolean(s.appState?.teleprompterOpen)} onClick={(e) => {
                   e.currentTarget.closest("details")!.open = false;
@@ -259,8 +261,9 @@ export function Editor() {
             </button>
           </div>
         </header>
-        <div className={`editor${libraryOpen ? " with-library" : ""}${inspectorOpen ? " with-inspector" : ""}`}>
-          <nav className="tool-rail" aria-label="Editor tools">
+        <div className="editor-tools">
+          <button className="import-media" disabled={!s.connected} onClick={importMedia} title="Import media" aria-label="Import media"><EditorIcon name="import" /><span>Import media</span></button>
+          <nav className="tool-rail" aria-label="Media and effects">
             {DOCK_RAIL.map((tool) => {
               const active = libraryOpen && (dockTab === tool || (tool === "filters" && dockTab === "luts"));
               return <button key={tool} className={active ? "selected-tool" : "ghost"} title={DOCK_LABEL[tool]} aria-label={DOCK_LABEL[tool]} aria-pressed={active} aria-controls="editor-library" onClick={() => openTool(tool, true)}><EditorIcon name={tool} /><span>{DOCK_LABEL[tool]}</span></button>;
@@ -270,17 +273,21 @@ export function Editor() {
               ui.set({ recorder: !recordingTools });
             }}><EditorIcon name="voice" /><span>Voiceover</span></button>
           </nav>
+          <ToolSearch onOpen={openTool} />
+        </div>
+        <div className={`editor${libraryOpen ? " with-library" : ""}${inspectorOpen ? " with-inspector" : ""}`}>
           <aside id="editor-library" className="editor-library" aria-label="Library" hidden={!libraryOpen}>
-            {libraryOpen && <Dock onClose={() => showPanel("library", false)} />}
+            {libraryOpen && <Dock onClose={() => { showPanel("library", false); libraryToggle.current?.focus(); }} />}
           </aside>
-          <Viewport ref={viewport} onOpenEditingCache={() => setCacheOpen(true)} onOpenLibrary={() => {
-            openTool("media");
-            libraryToggle.current?.focus();
-          }} />
+          <Viewport ref={viewport} blocked={compact && compactPanel !== null} onOpenEditingCache={() => setCacheOpen(true)} onImportMedia={importMedia} />
           <aside id="editor-inspector" className="editor-inspector" aria-label="Inspector" hidden={!inspectorOpen}>
+            {compact && inspectorOpen && <button className="icon ghost close-inspector" aria-label="Close inspector" title="Close inspector" onClick={() => {
+              showPanel("inspector", false);
+              inspectorToggle.current?.focus();
+            }}><EditorIcon name="close" /></button>}
             {inspectorOpen && <Inspector key={selected.map((e) => e.id).join(",")} />}
           </aside>
-          {compact && compactPanel && <button className="panel-scrim" tabIndex={-1} aria-label={`Close ${compactPanel}`} onClick={() => setCompactPanel(null)} />}
+          {compact && compactPanel && <button className="panel-scrim" tabIndex={-1} aria-hidden="true" onClick={() => setCompactPanel(null)} />}
           <Timeline onSeek={seek} />
         </div>
       </div>

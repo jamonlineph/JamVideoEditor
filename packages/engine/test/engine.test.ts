@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { addMediaToTimeline, mainTrack, splitAt, sequentialIds } from "@openedits/core";
-import { EngineHost, createFfprobe, resolveWorkspace } from "../src/index.js";
+import { EngineHost, createFfprobe, resolveWorkspace, type ProbeResult } from "../src/index.js";
 import { tempWorkspace, testMedia } from "./media.js";
 
 const hosts: EngineHost[] = [];
@@ -135,5 +135,18 @@ describe("library and persistence", () => {
     const first = await h.importMedia([m.photo]);
     const again = await h.importMedia([m.photo]);
     expect(again.existing).toEqual(first.added);
+  });
+
+  it("does not attach in-flight imports to a different project", async () => {
+    const probe = Promise.withResolvers<ProbeResult>();
+    const h = host(tempWorkspace("switch-import"), { prober: () => probe.promise });
+    const first = h.newProject();
+    const importing = h.importMedia(["photo.png"]);
+    const second = h.newProject();
+    probe.resolve({ kind: "image", width: 100, height: 100, sizeBytes: 1, hasVideo: true, hasAudio: false });
+    await expect(importing).rejects.toThrow("The project changed during import");
+    expect(h.project.id).toBe(second.id);
+    expect(h.project.media).toEqual({});
+    expect(h.openProject(first.id).media).toEqual({});
   });
 });
