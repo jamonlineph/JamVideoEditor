@@ -219,11 +219,11 @@ void main() {
  * Layer effects (one pass each; blur and glow add separable blur passes in the compositor).
  * Texture row 0 is the top; colors are premultiplied. uParams carries each effect's parameters.
  */
-export const EFFECT_FS = `#version 300 es
+export const effectShader = (type: number) => `#version 300 es
+#define EFFECT_TYPE ${type}
 precision highp float;
 uniform sampler2D uTex;
 uniform sampler2D uAux;   // second input (glow: the blurred bright pass)
-uniform int uType;
 uniform float uAmount;    // effect intensity 0..1
 uniform vec4 uParams;
 uniform vec2 uTexel;
@@ -255,41 +255,41 @@ vec4 sampleOr(vec2 uv, vec4 outside) {
 
 void main() {
   vec4 c = texture(uTex, vUv);
-  if (uType == 1) {                                   // vignette: amount (pre-scaled), softness
+#if EFFECT_TYPE == 1 // vignette: amount (pre-scaled), softness
     float d = distance(vUv, vec2(0.5)) * 1.41421;
     float soft = mix(0.2, 0.9, uParams.x);
     c.rgb *= 1.0 - uAmount * smoothstep(1.0 - soft, 1.0, d);
-  } else if (uType == 2) {                            // sharpen
+#elif EFFECT_TYPE == 2 // sharpen
     vec4 blur = (texture(uTex, vUv + vec2(uTexel.x, 0.0)) + texture(uTex, vUv - vec2(uTexel.x, 0.0)) +
                  texture(uTex, vUv + vec2(0.0, uTexel.y)) + texture(uTex, vUv - vec2(0.0, uTexel.y))) * 0.25;
     c.rgb = clamp(c.rgb + (c.rgb - blur.rgb) * uAmount * 2.0, 0.0, c.a);
-  } else if (uType == 3) {                            // film grain: size px
+#elif EFFECT_TYPE == 3 // film grain: size px
     float n = hash(floor(vUv / (uTexel * max(uParams.x, 1.0))) + uTime) - 0.5;
     c.rgb = clamp(c.rgb + n * uAmount * 0.35 * c.a, 0.0, c.a);
-  } else if (uType == 4) {                            // chromatic aberration: angle rad
+#elif EFFECT_TYPE == 4 // chromatic aberration: angle rad
     vec2 dir = vec2(cos(uParams.x), sin(uParams.x)) * uAmount * 0.02;
     c.r = texture(uTex, vUv + dir).r;
     c.b = texture(uTex, vUv - dir).b;
-  } else if (uType == 5) {                            // pixelate: cell px
+#elif EFFECT_TYPE == 5 // pixelate: cell px
     vec2 cell = uTexel * max(uParams.x, 1.0);
     c = texture(uTex, (floor(vUv / cell) + 0.5) * cell);
-  } else if (uType == 6) {                            // posterize: levels
+#elif EFFECT_TYPE == 6 // posterize: levels
     float levels = max(uParams.x, 2.0);
     if (c.a > 1e-4) c.rgb = floor(c.rgb / c.a * levels + 0.5) / levels * c.a;
-  } else if (uType == 7) {                            // mirror: axis (0 vertical seam, 1 horizontal)
+#elif EFFECT_TYPE == 7 // mirror: axis (0 vertical seam, 1 horizontal)
     vec2 uv = uParams.x < 0.5 ? vec2(vUv.x > 0.5 ? 1.0 - vUv.x : vUv.x, vUv.y) : vec2(vUv.x, vUv.y > 0.5 ? 1.0 - vUv.y : vUv.y);
     c = texture(uTex, uv);
-  } else if (uType == 8) {                            // motion blur: angle rad, length 0..1
+#elif EFFECT_TYPE == 8 // motion blur: angle rad, length 0..1
     vec2 d = vec2(cos(uParams.x), sin(uParams.x)) * uParams.y * 0.06 * shortUv();
     vec4 s = vec4(0.0);
     for (int i = -8; i <= 8; i++) s += texture(uTex, vUv + d * float(i) / 8.0);
     c = mix(c, s / 17.0, uAmount);
-  } else if (uType == 9) {                            // zoom blur: strength 0..1
+#elif EFFECT_TYPE == 9 // zoom blur: strength 0..1
     vec2 d = (vUv - 0.5) * uParams.x * 0.3;
     vec4 s = vec4(0.0);
     for (int i = 0; i < 16; i++) s += texture(uTex, vUv - d * float(i) / 15.0);
     c = mix(c, s / 16.0, uAmount);
-  } else if (uType == 10) {                           // tilt shift: focus line y, sharp band width
+#elif EFFECT_TYPE == 10 // tilt shift: focus line y, sharp band width
     float f = smoothstep(uParams.y * 0.5, uParams.y * 0.5 + 0.25, abs(vUv.y - uParams.x));
     vec2 r = f * 0.025 * shortUv();
     vec4 s = c;
@@ -299,14 +299,14 @@ void main() {
       s += texture(uTex, vUv + vec2(cos(a), sin(a)) * rr * r);
     }
     c = mix(c, s / 25.0, uAmount);
-  } else if (uType == 11) {                           // glow, step 1: keep what is brighter than the threshold
+#elif EFFECT_TYPE == 11 // glow, step 1: keep what is brighter than the threshold
     float l = dot(unpremul(c), LUMA);
     c *= smoothstep(uParams.x, min(1.0, uParams.x + 0.25), l);
-  } else if (uType == 12) {                           // glow, step 2: add the blurred highlights
+#elif EFFECT_TYPE == 12 // glow, step 2: add the blurred highlights
     vec4 g = texture(uAux, vUv) * uAmount * 1.6;
     float a = max(c.a, min(1.0, g.a));
     c = vec4(min(c.rgb + g.rgb, vec3(a)), a);
-  } else if (uType == 13) {                           // light leak: hue deg, speed
+#elif EFFECT_TYPE == 13 // light leak: hue deg, speed
     float t = uSeconds * max(uParams.y, 0.05) * 0.35;
     vec2 center = vec2(0.1 + 0.8 * noise1(t), 0.05 + 0.35 * noise1(t + 17.0));
     float d = distance(vUv * vec2(aspect(), 1.0), center * vec2(aspect(), 1.0));
@@ -314,10 +314,10 @@ void main() {
     vec3 tint = mix(hueColor(uParams.x), vec3(1.0, 0.9, 0.7), 0.25) * leak * c.a;
     c.rgb = 1.0 - (1.0 - c.rgb) * (1.0 - tint);       // screen
     c.rgb = min(c.rgb, vec3(c.a));
-  } else if (uType == 14) {                           // flash: Hz
+#elif EFFECT_TYPE == 14 // flash: Hz
     float pulse = uParams.x > 0.0 ? pow(0.5 + 0.5 * cos(TAU * uParams.x * uSeconds), 12.0) : 0.0;
     c.rgb = mix(c.rgb, vec3(c.a), pulse * uAmount);
-  } else if (uType == 15) {                           // VHS: tracking 0..1, noise 0..1
+#elif EFFECT_TYPE == 15 // VHS: tracking 0..1, noise 0..1
     float frame = floor(uSeconds * 30.0);
     float line = floor(vUv.y / uTexel.y);
     float band = exp(-pow((fract(vUv.y + uSeconds * 0.18) - 0.5) * 18.0, 2.0));
@@ -330,7 +330,7 @@ void main() {
     col = mix(col, vec3(dot(col, LUMA)), 0.25);
     col += (hash(vUv * 731.0 + frame) - 0.5) * uParams.y * 0.35 * base.a;
     c = mix(c, vec4(clamp(col, 0.0, base.a), base.a), uAmount);
-  } else if (uType == 16) {                           // glitch: strength 0..1, speed
+#elif EFFECT_TYPE == 16 // glitch: strength 0..1, speed
     float t = floor(uSeconds * max(uParams.y, 0.1) * 4.0);
     float burst = step(0.5, hash(vec2(t, 3.1)));
     float rows = floor(vUv.y * (6.0 + 26.0 * hash(vec2(t, 7.0))));
@@ -341,7 +341,7 @@ void main() {
     g.r = texture(uTex, uv + vec2(ca, 0.0)).r;
     g.b = texture(uTex, uv - vec2(ca, 0.0)).b;
     c = mix(c, g, uAmount);
-  } else if (uType == 17) {                           // halftone: dot pitch px
+#elif EFFECT_TYPE == 17 // halftone: dot pitch px
     float cell = max(uParams.x, 2.0);
     mat2 rot = mat2(0.70711, 0.70711, -0.70711, 0.70711);
     vec2 px = rot * (vUv / uTexel);
@@ -351,29 +351,29 @@ void main() {
     float ink = 1.0 - smoothstep(r - 0.75, r + 0.75, distance(px, centerPx));
     vec3 paper = vec3(0.97, 0.96, 0.93);
     c = mix(c, vec4(mix(paper, vec3(0.05), ink) * c.a, c.a), uAmount);
-  } else if (uType == 18) {                           // kaleidoscope: segments
+#elif EFFECT_TYPE == 18 // kaleidoscope: segments
     vec2 p = (vUv - 0.5) * vec2(aspect(), 1.0);
     float seg = TAU / max(uParams.x, 2.0);
     float a = mod(atan(p.y, p.x), seg);
     a = abs(a - seg * 0.5);
     vec2 q = vec2(cos(a), sin(a)) * length(p) / vec2(aspect(), 1.0);
     c = mix(c, texture(uTex, q + 0.5), uAmount);
-  } else if (uType == 19) {                           // fisheye: strength 0..1 (edges stay put, the middle bulges)
+#elif EFFECT_TYPE == 19 // fisheye: strength 0..1 (edges stay put, the middle bulges)
     vec2 p = (vUv * 2.0 - 1.0) * vec2(aspect(), 1.0) / max(aspect(), 1.0);
     float r2 = dot(p, p);
     float k = uParams.x * 0.65;
     vec2 q = p * (1.0 - k + k * r2) * max(aspect(), 1.0) / vec2(aspect(), 1.0);
     c = mix(c, sampleOr(q * 0.5 + 0.5, vec4(0.0)), uAmount);
-  } else if (uType == 20) {                           // camera shake: strength 0..1, Hz
+#elif EFFECT_TYPE == 20 // camera shake: strength 0..1, Hz
     float t = uSeconds * max(uParams.y, 0.1);
     float s = uParams.x * uAmount;
     vec2 off = vec2(noise1(t) - 0.5, noise1(t + 31.7) - 0.5) * s * 0.08;
     float zoom = 1.0 + s * 0.09;
     c = texture(uTex, (vUv - 0.5) / zoom + 0.5 + off / zoom);
-  } else if (uType == 21) {                           // zoom pulse: strength 0..1, Hz
+#elif EFFECT_TYPE == 21 // zoom pulse: strength 0..1, Hz
     float pulse = uParams.y > 0.0 ? pow(0.5 + 0.5 * cos(TAU * uParams.y * uSeconds), 4.0) : 0.0;
     c = texture(uTex, (vUv - 0.5) / (1.0 + uParams.x * 0.3 * pulse * uAmount) + 0.5);
-  } else if (uType == 22) {                           // denoise: strength 0..1 (edge-preserving)
+#elif EFFECT_TYPE == 22 // denoise: strength 0..1 (edge-preserving)
     vec4 sum = vec4(0.0);
     float wsum = 0.0;
     float range = 0.01 + 0.09 * uParams.x;
@@ -387,7 +387,7 @@ void main() {
       }
     }
     c = mix(c, sum / wsum, uAmount);
-  }
+#endif
   outColor = c;
 }`;
 
@@ -456,11 +456,11 @@ void main() {
   outColor = vec4(mix(b, r, layer.a), 1.0);
 }`;
 
-export const TRANSITION_FS = `#version 300 es
+export const transitionShader = (type: number) => `#version 300 es
+#define TRANSITION_TYPE ${type}
 precision highp float;
 uniform sampler2D uFrom;
 uniform sampler2D uTo;
-uniform int uType;
 uniform float uProgress;
 uniform float uAspect;
 in vec2 vUv;
@@ -473,23 +473,33 @@ void main() {
   vec4 a = texture(uFrom, uv);
   vec4 b = texture(uTo, uv);
   vec4 c;
-  if (uType == 1) c = p < 0.5 ? mix(a, vec4(0.0, 0.0, 0.0, 1.0), p * 2.0) : mix(vec4(0.0, 0.0, 0.0, 1.0), b, p * 2.0 - 1.0);
-  else if (uType == 2) c = p < 0.5 ? mix(a, vec4(1.0), p * 2.0) : mix(vec4(1.0), b, p * 2.0 - 1.0);
-  else if (uType == 3) c = uv.x >= 1.0 - e ? texture(uTo, uv - vec2(1.0 - e, 0.0)) : a;                  // slide_left
-  else if (uType == 4) c = uv.x < e ? texture(uTo, uv + vec2(1.0 - e, 0.0)) : a;                          // slide_right
-  else if (uType == 5) c = uv.y >= 1.0 - e ? texture(uTo, uv - vec2(0.0, 1.0 - e)) : a;                  // slide_up
-  else if (uType == 6) c = uv.y < e ? texture(uTo, uv + vec2(0.0, 1.0 - e)) : a;                          // slide_down
-  else if (uType == 7) c = uv.x < 1.0 - e ? texture(uFrom, uv + vec2(e, 0.0)) : texture(uTo, uv - vec2(1.0 - e, 0.0)); // push_left
-  else if (uType == 8) c = uv.y < 1.0 - e ? texture(uFrom, uv + vec2(0.0, e)) : texture(uTo, uv - vec2(0.0, 1.0 - e)); // push_up
-  else if (uType == 9) c = mix(texture(uFrom, (uv - 0.5) / (1.0 + e) + 0.5), b, smoothstep(0.2, 0.8, p));             // zoom_in
-  else if (uType == 10) c = mix(a, texture(uTo, (uv - 0.5) / (2.0 - e) + 0.5), smoothstep(0.2, 0.8, p));              // zoom_out
-  else if (uType == 11) c = mix(a, b, smoothstep(-0.02, 0.02, uv.x - (1.0 - e)));                                      // wipe_left
-  else if (uType == 12) {                                                                                              // circle_reveal
+#if TRANSITION_TYPE == 1
+  c = p < 0.5 ? mix(a, vec4(0.0, 0.0, 0.0, 1.0), p * 2.0) : mix(vec4(0.0, 0.0, 0.0, 1.0), b, p * 2.0 - 1.0);
+#elif TRANSITION_TYPE == 2
+  c = p < 0.5 ? mix(a, vec4(1.0), p * 2.0) : mix(vec4(1.0), b, p * 2.0 - 1.0);
+#elif TRANSITION_TYPE == 3
+  c = uv.x >= 1.0 - e ? texture(uTo, uv - vec2(1.0 - e, 0.0)) : a;                  // slide_left
+#elif TRANSITION_TYPE == 4
+  c = uv.x < e ? texture(uTo, uv + vec2(1.0 - e, 0.0)) : a;                          // slide_right
+#elif TRANSITION_TYPE == 5
+  c = uv.y >= 1.0 - e ? texture(uTo, uv - vec2(0.0, 1.0 - e)) : a;                  // slide_up
+#elif TRANSITION_TYPE == 6
+  c = uv.y < e ? texture(uTo, uv + vec2(0.0, 1.0 - e)) : a;                          // slide_down
+#elif TRANSITION_TYPE == 7
+  c = uv.x < 1.0 - e ? texture(uFrom, uv + vec2(e, 0.0)) : texture(uTo, uv - vec2(1.0 - e, 0.0)); // push_left
+#elif TRANSITION_TYPE == 8
+  c = uv.y < 1.0 - e ? texture(uFrom, uv + vec2(0.0, e)) : texture(uTo, uv - vec2(0.0, 1.0 - e)); // push_up
+#elif TRANSITION_TYPE == 9
+  c = mix(texture(uFrom, (uv - 0.5) / (1.0 + e) + 0.5), b, smoothstep(0.2, 0.8, p));             // zoom_in
+#elif TRANSITION_TYPE == 10
+  c = mix(a, texture(uTo, (uv - 0.5) / (2.0 - e) + 0.5), smoothstep(0.2, 0.8, p));              // zoom_out
+#elif TRANSITION_TYPE == 11
+  c = mix(a, b, smoothstep(-0.02, 0.02, uv.x - (1.0 - e)));                                      // wipe_left
+#elif TRANSITION_TYPE == 12 // circle_reveal
     float d = length((uv - 0.5) * vec2(uAspect, 1.0));
     float r = e * length(vec2(uAspect, 1.0)) * 0.5;
     c = mix(b, a, smoothstep(-0.005, 0.005, d - r));
-  }
-  else if (uType == 13) {                                                                                              // spin: turn and zoom out, then in
+#elif TRANSITION_TYPE == 13 // spin: turn and zoom out, then in
     float ang = e * 6.2831853;
     float zoom = 1.0 + sin(3.14159 * p) * 1.4;
     vec2 q = (uv - 0.5) * vec2(uAspect, 1.0) * zoom;
@@ -498,8 +508,7 @@ void main() {
     vec4 from = inside ? texture(uFrom, q) : vec4(0.0, 0.0, 0.0, 1.0);
     vec4 to = inside ? texture(uTo, q) : vec4(0.0, 0.0, 0.0, 1.0);
     c = mix(from, to, smoothstep(0.4, 0.6, p));
-  }
-  else if (uType == 14) {                                                                                              // blur_dissolve
+#elif TRANSITION_TYPE == 14 // blur_dissolve
     float r = sin(3.14159 * p) * 0.03;
     vec4 sa = a;
     vec4 sb = b;
@@ -510,8 +519,7 @@ void main() {
       sb += texture(uTo, uv + o);
     }
     c = mix(sa, sb, e) / 17.0;
-  }
-  else if (uType == 15) {                                                                                              // glitch
+#elif TRANSITION_TYPE == 15 // glitch
     float burst = sin(3.14159 * p);
     float t = floor(p * 24.0);
     float rows = floor(uv.y * (8.0 + 20.0 * fract(sin(t * 12.9898) * 43758.5453)));
@@ -521,8 +529,7 @@ void main() {
     vec4 from = vec4(texture(uFrom, q + vec2(ca, 0.0)).r, texture(uFrom, q).g, texture(uFrom, q - vec2(ca, 0.0)).b, 1.0);
     vec4 to = vec4(texture(uTo, q + vec2(ca, 0.0)).r, texture(uTo, q).g, texture(uTo, q - vec2(ca, 0.0)).b, 1.0);
     c = p < 0.5 ? from : to;
-  }
-  else if (uType == 16) {                                                                                              // whip_pan: fast push with motion blur
+#elif TRANSITION_TYPE == 16 // whip_pan: fast push with motion blur
     vec4 s = vec4(0.0);
     float blur = sin(3.14159 * p) * 0.12;
     for (int i = -6; i <= 6; i++) {
@@ -530,12 +537,12 @@ void main() {
       s += w.x < 1.0 - e ? texture(uFrom, w + vec2(e, 0.0)) : texture(uTo, w - vec2(1.0 - e, 0.0));
     }
     c = s / 13.0;
-  }
-  else if (uType == 17) {                                                                                              // flash: cut under a white flash
+#elif TRANSITION_TYPE == 17 // flash: cut under a white flash
     float w = pow(1.0 - abs(2.0 * p - 1.0), 2.0);
     c = mix(p < 0.5 ? a : b, vec4(1.0), w);
-  }
-  else c = mix(a, b, p);
+#else
+  c = mix(a, b, p);
+#endif
   outColor = c;
 }`;
 
@@ -578,7 +585,7 @@ export const BLEND_MODES: Record<string, number> = {
   add: 11,
 };
 
-/** Effect ids drawn by EFFECT_FS (blur and glow also use the separable blur pass). */
+/** Effect ids drawn by effectShader (blur and glow also use the separable blur pass). */
 export const EFFECT_TYPES: Record<string, number> = {
   vignette: 1,
   sharpen: 2,

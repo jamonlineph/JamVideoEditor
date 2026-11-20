@@ -30,6 +30,10 @@ await new Promise((resolve, reject) => {
 });
 let seq = 0;
 const waiting = new Map();
+ws.on("close", (code) => {
+  for (const request of waiting.values()) request.reject(new Error(`${request.tool}: editor connection closed (${code})`));
+  waiting.clear();
+});
 ws.on("message", (data) => {
   const msg = JSON.parse(String(data));
   if (msg.type !== "result") return;

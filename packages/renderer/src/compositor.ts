@@ -5,7 +5,6 @@ import {
   BLUR_FS,
   COLOR_FS,
   COPY_FS,
-  EFFECT_FS,
   EFFECT_TYPES,
   FULLSCREEN_VS,
   GLOW_ADD,
@@ -13,8 +12,9 @@ import {
   LAYER_VS,
   SUBJECT_FS,
   SUBJECT_TYPES,
-  TRANSITION_FS,
   TRANSITION_TYPES,
+  effectShader,
+  transitionShader,
 } from "./shaders.js";
 import { rasterCaption, rasterKey, rasterShape, rasterSticker, rasterText, type Raster } from "./raster.js";
 
@@ -50,14 +50,28 @@ class Program {
       const sh = gl.createShader(type)!;
       gl.shaderSource(sh, src);
       gl.compileShader(sh);
-      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(`Shader ${name} failed to compile: ${gl.getShaderInfoLog(sh)}`);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        const message = gl.getShaderInfoLog(sh);
+        gl.deleteShader(sh);
+        throw new Error(`Shader ${name} failed to compile: ${message}`);
+      }
       return sh;
     };
     const p = gl.createProgram()!;
-    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
-    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
-    gl.linkProgram(p);
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`Program ${name} failed to link: ${gl.getProgramInfoLog(p)}`);
+    const shaders: WebGLShader[] = [];
+    try {
+      shaders.push(compile(gl.VERTEX_SHADER, vs));
+      shaders.push(compile(gl.FRAGMENT_SHADER, fs));
+      for (const shader of shaders) gl.attachShader(p, shader);
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`Program ${name} failed to link: ${gl.getProgramInfoLog(p)}`);
+      for (const shader of shaders) gl.detachShader(p, shader);
+    } catch (error) {
+      gl.deleteProgram(p);
+      throw error;
+    } finally {
+      for (const shader of shaders) gl.deleteShader(shader);
+    }
     this.program = p;
   }
 
@@ -135,7 +149,9 @@ export class Compositor {
   readonly gl: WebGL2RenderingContext;
   width = 0;
   height = 0;
-  private programs: Record<"copy" | "layer" | "color" | "blur" | "effect" | "blend" | "transition" | "subject", Program>;
+  private programs: Record<"copy" | "layer" | "color" | "blur" | "blend" | "subject", Program>;
+  private effectPrograms = new Map<number, Program>();
+  private transitionPrograms = new Map<number, Program>();
   private vao: WebGLVertexArrayObject;
   private pool = new Map<string, Target[]>();
   private acc!: Target;
@@ -155,9 +171,7 @@ export class Compositor {
       layer: new Program(gl, LAYER_VS, LAYER_FS, "layer"),
       color: new Program(gl, FULLSCREEN_VS, COLOR_FS, "color"),
       blur: new Program(gl, FULLSCREEN_VS, BLUR_FS, "blur"),
-      effect: new Program(gl, FULLSCREEN_VS, EFFECT_FS, "effect"),
       blend: new Program(gl, FULLSCREEN_VS, BLEND_FS, "blend"),
-      transition: new Program(gl, FULLSCREEN_VS, TRANSITION_FS, "transition"),
       subject: new Program(gl, FULLSCREEN_VS, SUBJECT_FS, "subject"),
     };
     this.vao = gl.createVertexArray()!;
@@ -421,16 +435,26 @@ export class Compositor {
     return out;
   }
 
-  /** One EFFECT_FS pass over `src`. */
+  /** Compile just the selected variant and cache it for playback. */
+  private variantProgram(cache: Map<number, Program>, source: (type: number) => string, type: number, name: string) {
+    let program = cache.get(type);
+    if (!program) {
+      program = new Program(this.gl, FULLSCREEN_VS, source(type), `${name} ${type}`);
+      cache.set(type, program);
+    }
+    return program;
+  }
+
+  /** One effect pass over `src`. */
   private runEffect(src: TextureInfo, type: number, params: [number, number, number, number], amount: number, time: number, aux?: TextureInfo): Target {
     const gl = this.gl;
+    const program = this.variantProgram(this.effectPrograms, effectShader, type, "effect");
     const out = this.acquire(src.width, src.height);
-    this.pass(this.programs.effect, out, (p) => {
+    this.pass(program, out, (p) => {
       this.bind(0, src.tex);
       gl.uniform1i(p.loc("uTex"), 0);
       this.bind(1, (aux ?? src).tex);
       gl.uniform1i(p.loc("uAux"), 1);
-      gl.uniform1i(p.loc("uType"), type);
       gl.uniform1f(p.loc("uAmount"), amount);
       gl.uniform4f(p.loc("uParams"), ...params);
       gl.uniform2f(p.loc("uTexel"), 1 / src.width, 1 / src.height);
@@ -635,18 +659,18 @@ export class Compositor {
 
   private drawTransition(layer: TransitionLayer, background: [number, number, number, number], res: SceneResources, time: number) {
     const gl = this.gl;
+    const program = this.variantProgram(this.transitionPrograms, transitionShader, TRANSITION_TYPES[layer.type] ?? 0, "transition");
     const a = this.acquire(this.width, this.height);
     const b = this.acquire(this.width, this.height);
     this.clear(a, background);
     this.clear(b, background);
     if (layer.from) this.drawLayer(a, layer.from, res, time);
     if (layer.to) this.drawLayer(b, layer.to, res, time);
-    this.pass(this.programs.transition, this.acc, (p) => {
+    this.pass(program, this.acc, (p) => {
       this.bind(0, a.tex);
       gl.uniform1i(p.loc("uFrom"), 0);
       this.bind(1, b.tex);
       gl.uniform1i(p.loc("uTo"), 1);
-      gl.uniform1i(p.loc("uType"), TRANSITION_TYPES[layer.type] ?? 0);
       gl.uniform1f(p.loc("uProgress"), layer.progress);
       gl.uniform1f(p.loc("uAspect"), this.width / this.height);
     });
