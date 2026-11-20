@@ -119,7 +119,7 @@ export function McpConnectionDialog({ onClose }: { onClose: () => void }) {
         <textarea className="mcp-config" ref={configField} aria-label="Antigravity MCP configuration" readOnly value={displayed} wrap="off" rows={9} />
         <div className="mcp-config-actions">
           <button className="primary" onClick={() => void copy(config, "Configuration", configField.current)}><EditorIcon name="copy" />Copy configuration</button>
-          <button aria-pressed={showToken} onClick={() => setShowToken((shown) => !shown)}><EditorIcon name={showToken ? "eyeOff" : "eye"} />{showToken ? "Hide token" : "Show token"}</button>
+          <button aria-pressed={showToken} onClick={() => { setShowToken((shown) => !shown); setStatus(""); }}><EditorIcon name={showToken ? "eyeOff" : "eye"} />{showToken ? "Hide token" : "Show token"}</button>
         </div>
         <p className="muted small">The copied configuration includes the private token. Other MCP clients can use the server URL and the same Authorization header. Keep OpenEdits Studio running while connected.</p>
         {android && <details className="mcp-forward">
