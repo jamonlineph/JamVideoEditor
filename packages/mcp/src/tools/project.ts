@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { AspectRatioSchema, EditError, FpsSchema, ResolutionSchema, addMediaToTimeline, compositionDuration, mainTrack, setBrief } from "@openedits/core";
-import { AutopilotWatcher, expandHome, listAutopilotJobs } from "@openedits/engine";
+import { AutopilotWatcher, expandHome, listAutopilotJobs, transcriptionAvailable } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
-import { expectedVersion, mutate, projectSummary, round, summarize } from "./common.js";
+import { expectedVersion, mutate, projectSummary, round, summarize, summarizeProject } from "./common.js";
 
 const canvasInput = z
   .object({ aspectRatio: AspectRatioSchema.optional(), resolution: ResolutionSchema.optional(), fps: FpsSchema.optional() })
@@ -196,20 +196,31 @@ export const projectTools = [
     name: "get_project",
     title: "Get project overview",
     category: "project",
-    description: "Overview of the open project (or projectId): brief, duration, main-track clips, media, revisions, and analysis status.",
+    description: "Overview of the open project (or projectId): brief, duration, main-track clips, media, revisions, and analysis status. Inspecting another project leaves the active editor session unchanged.",
     input: z.object({ projectId: z.string().optional() }),
     readOnly: true,
-    handler: (a, ctx) => {
-      if (a.projectId && a.projectId !== ctx.host.appState.openProjectId) ctx.host.openProject(a.projectId);
-      const p = ctx.host.project;
+    handler: async (a, ctx) => {
+      const overview = ctx.host.readProjectOverview(a.projectId);
+      const p = overview.project;
+      const media = Object.values(p.media);
+      const transcribed = new Set(overview.transcribedMediaIds);
+      const audioMedia = media.filter((asset) => asset.hasAudio);
       return {
-        project: projectSummary(ctx),
+        project: summarizeProject(p, overview),
         brief: p.brief,
         durationSeconds: round(compositionDuration(p)),
         clips: mainTrack(p).elementIds.map((id, index) => ({ index, ...summarize(p, p.elements[id]) })),
-        media: Object.values(p.media).map((m) => ({ id: m.id, name: m.name, kind: m.kind, durationSourceSeconds: m.durationSourceSeconds, width: m.width, height: m.height })),
-        revisions: ctx.host.listRevisions(),
-        analysis: { transcripts: "not available until Phase 4 (transcribeClip)", silences: "use findPauses", loudness: "use loudness" },
+        media: media.map((m) => ({ id: m.id, name: m.name, kind: m.kind, durationSourceSeconds: m.durationSourceSeconds, width: m.width, height: m.height })),
+        revisions: overview.revisions,
+        analysis: {
+          transcripts: {
+            available: await transcriptionAvailable(ctx.host.settings.whisperModelPath),
+            transcribedMediaIds: audioMedia.filter((asset) => transcribed.has(asset.id)).map((asset) => asset.id),
+            missingMediaIds: audioMedia.filter((asset) => !transcribed.has(asset.id)).map((asset) => asset.id),
+          },
+          silences: "use findPauses",
+          loudness: "use loudness",
+        },
       };
     },
   }),

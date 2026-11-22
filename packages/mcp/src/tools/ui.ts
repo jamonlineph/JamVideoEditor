@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { buildAudioPlan, compositionDuration, EditError } from "@openedits/core";
-import { decodePcm, MIX_SAMPLE_RATE, renderAudioMix, speechAvailable, visionAvailable, whisperAvailable, writeWav } from "@openedits/engine";
+import { decodePcm, MIX_SAMPLE_RATE, renderAudioMix, speechAvailable, transcriptionAvailable, visionAvailable, writeWav } from "@openedits/engine";
 import { defineTool } from "../defineTool.js";
 import { round } from "./common.js";
 
@@ -127,7 +127,7 @@ export const voiceoverTools = [
     handler: async (_a, ctx) => {
       const s = ctx.host.settings;
       const features = {
-        transcription: (await whisperAvailable()) && fs.existsSync(s.whisperModelPath),
+        transcription: await transcriptionAvailable(s.whisperModelPath),
         speech: await speechAvailable(),
         vision: visionAvailable(),
       };

@@ -350,6 +350,22 @@ export class EngineHost extends EventEmitter {
     return this.requireOpen().session.state;
   }
 
+  /** Inspect any project without taking its edit lock or changing the editor session. */
+  readProjectOverview(projectId?: string) {
+    if (projectId !== undefined && projectId !== this.current?.id) {
+      return ProjectStore.readOverview(this.requireProjectRow(projectId).dir);
+    }
+    const { session, store } = this.requireOpen();
+    return {
+      project: session.state,
+      version: session.version,
+      canUndo: session.canUndo,
+      canRedo: session.canRedo,
+      revisions: store.listRevisions(),
+      transcribedMediaIds: store.listTranscribedMediaIds(),
+    };
+  }
+
   get projectId(): string {
     return this.requireOpen().id;
   }

@@ -84,6 +84,45 @@ describe("MCP tool surface", () => {
     expect(e2.error.code).toBe("PROJECT_NOT_FOUND");
   });
 
+  it("inspects a saved project without changing the active edit or recent projects", async () => {
+    const { clipA, music } = testMedia();
+    const { projectId: savedId, mediaIds: [clipId] } = await call("create_project", { files: [clipA], brief: "Saved brief" });
+    const { addedIds: [musicId] } = await call("importToMediaPanel", { paths: [music] });
+    host.store.saveTranscript({ mediaId: clipId, language: "en", model: "test", createdAt: 1, durationSourceSeconds: 6, words: [] });
+    await call("saveRevision", { label: "Initial cut" });
+    await call("setBrief", { brief: "Discarded brief" });
+    await call("undo");
+    const savedVersion = host.session.version;
+
+    const { projectId: activeId } = await call("newProject");
+    const { elementId } = await call("addText", { text: "Active edit", start: 0, duration: 2 });
+    await call("setSelection", { elementIds: [elementId] });
+    await call("setPlayhead", { seconds: 1 });
+    const before = host.appState;
+    const openedAt = host.requireProjectRow(savedId).openedAt;
+    const sessionFile = fs.readFileSync(host.paths.sessionFile, "utf8");
+
+    expect(await call("get_project", { projectId: savedId })).toMatchObject({
+      project: { id: savedId, version: savedVersion, canUndo: true, canRedo: true },
+      brief: "Saved brief",
+      clips: [{ mediaId: clipId }],
+      revisions: [{ label: "Initial cut" }],
+      analysis: { transcripts: { available: expect.any(Boolean), transcribedMediaIds: [clipId], missingMediaIds: [musicId] } },
+    });
+    expect(await call("get_project")).toMatchObject({ project: { id: activeId } });
+    expect(host.appState).toEqual(before);
+    expect(host.requireProjectRow(savedId).openedAt).toBe(openedAt);
+    expect(fs.readFileSync(host.paths.sessionFile, "utf8")).toBe(sessionFile);
+
+    await call("closeProject");
+    expect(await call("get_project", { projectId: savedId })).toMatchObject({ project: { id: savedId } });
+    expect(host.isOpen).toBe(false);
+    expect((await callError("get_project")).error.code).toBe("NO_PROJECT_OPEN");
+    expect((await callError("get_project", { projectId: "prj_missing" })).error.code).toBe("PROJECT_NOT_FOUND");
+    await call("deleteProject", { projectId: savedId });
+    await call("deleteProject", { projectId: activeId });
+  });
+
   it("composes caption edits in scope and replaces or resets presets in one undo step", async () => {
     const { projectId } = await call("newProject", { name: "Styling" });
     const { elementId: title } = await call("addText", { text: "Title", start: 0, duration: 2, presetId: "label_black" });

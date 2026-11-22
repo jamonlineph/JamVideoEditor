@@ -101,6 +101,19 @@ jobs:
           echo "$OUT" | grep -q "^ok   ffmpeg"
           echo "$OUT" | grep -q "^ok   ffprobe"
           echo "$OUT" | grep -q "^ok   H.264 encoder"
+      - name: Launch the packaged desktop app, import and export
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          smoke=(node --import tsx scripts/smoke-packaged-app.ts "${{ matrix.app }}" "${{ matrix.resources }}")
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y xvfb
+            sudo chown root:root "${{ matrix.resources }}/../chrome-sandbox"
+            sudo chmod 4755 "${{ matrix.resources }}/../chrome-sandbox"
+            xvfb-run -a "${smoke[@]}"
+          else
+            "${smoke[@]}"
+          fi
       - name: Install the .deb and check the browser mode a Googlebook uses (no display)
         if: runner.os == 'Linux'
         run: |

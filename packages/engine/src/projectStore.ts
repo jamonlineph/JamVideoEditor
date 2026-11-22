@@ -29,12 +29,12 @@ interface HistoryRow {
 export class ProjectStore {
   private db: Database;
   readonly dir: string;
-  readonly maxHistory: number;
+  readonly maxHistory = 300;
 
-  private constructor(dir: string, maxHistory = 300) {
+  private constructor(dir: string, readOnly = false) {
     this.dir = dir;
-    this.maxHistory = maxHistory;
-    this.db = openDatabase(path.join(dir, "project.db"));
+    this.db = openDatabase(path.join(dir, "project.db"), readOnly);
+    if (readOnly) return;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, version INTEGER NOT NULL, saved_at INTEGER NOT NULL);
@@ -55,6 +55,20 @@ export class ProjectStore {
   static open(dir: string): ProjectStore {
     if (!fs.existsSync(path.join(dir, "project.db"))) throw new Error(`No project.db in ${dir}`);
     return new ProjectStore(dir);
+  }
+
+  static readOverview(dir: string) {
+    const store = new ProjectStore(dir, true);
+    try {
+      return transaction(store.db, () => ({
+        ...store.load(),
+        ...store.historyFlags(),
+        revisions: store.listRevisions(),
+        transcribedMediaIds: store.listTranscribedMediaIds(),
+      }));
+    } finally {
+      store.close();
+    }
   }
 
   load(): { project: Project; version: number } {
@@ -91,6 +105,13 @@ export class ProjectStore {
 
   private transcriptCache: TranscriptIndex | null = null;
 
+  listTranscribedMediaIds(): string[] {
+    // Older projects may not have the transcript table until they are opened for editing.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcripts'").get()) return [];
+    const rows = this.db.prepare("SELECT media_id FROM transcripts ORDER BY media_id").all() as { media_id: string }[];
+    return rows.map((row) => row.media_id);
+  }
+
   loadTranscripts(): TranscriptIndex {
     if (!this.transcriptCache) {
       const rows = this.db.prepare("SELECT media_id, json FROM transcripts").all() as { media_id: string; json: string }[];
@@ -113,6 +134,11 @@ export class ProjectStore {
   }
 
   // ---- undo history persistence
+
+  private historyFlags() {
+    const stacks = this.db.prepare("SELECT DISTINCT stack FROM history").all().map((row) => row.stack);
+    return { canUndo: stacks.includes("undo"), canRedo: stacks.includes("redo") };
+  }
 
   loadHistory(): { undo: HistoryEntry[]; redo: HistoryEntry[] } {
     const rows = this.db.prepare("SELECT * FROM history ORDER BY seq").all() as unknown as HistoryRow[];

@@ -10,6 +10,7 @@
 // Apple Vision helper) are picked up from build/vendor/<arch> when present (scripts/fetch-tools.mjs).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundleEngine } from "./bundle-engine.mjs";
@@ -71,5 +72,5 @@ fs.writeFileSync(
 );
 
 const args = process.argv.slice(2);
-const cli = path.join(root, "node_modules", ".bin", process.platform === "win32" ? "electron-builder.cmd" : "electron-builder");
-execFileSync(cli, ["--config", "electron-builder.yml", "--publish", "never", ...args], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+const cli = createRequire(import.meta.url).resolve("electron-builder/cli.js");
+execFileSync(process.execPath, [cli, "--config", "electron-builder.yml", "--publish", "never", ...args], { cwd: root, stdio: "inherit" });

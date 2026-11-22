@@ -1,14 +1,16 @@
 // Builds the TypeScript packages (tsc) and bundles the Electron render host (esbuild).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tsc = path.join(root, "node_modules", ".bin", "tsc");
-execFileSync(tsc, ["-b", "packages/core", "packages/renderer", "packages/engine", "packages/mcp"], { cwd: root, stdio: "inherit" });
-execFileSync(tsc, ["-p", "packages/render-host"], { cwd: root, stdio: "inherit" });
+const require = createRequire(import.meta.url);
+const tsc = path.resolve(path.dirname(require.resolve("typescript/package.json")), require("typescript/package.json").bin.tsc);
+execFileSync(process.execPath, [tsc, "-b", "packages/core", "packages/renderer", "packages/engine", "packages/mcp"], { cwd: root, stdio: "inherit" });
+execFileSync(process.execPath, [tsc, "-p", "packages/render-host"], { cwd: root, stdio: "inherit" });
 
 const host = path.join(root, "packages", "render-host");
 const common = { bundle: true, platform: "node", format: "cjs", external: ["electron"], sourcemap: true, logLevel: "warning", conditions: ["@openedits/source"] };

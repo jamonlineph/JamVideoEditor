@@ -39,6 +39,10 @@ export async function whisperAvailable(): Promise<boolean> {
   return ok;
 }
 
+export async function transcriptionAvailable(modelPath: string): Promise<boolean> {
+  return fs.existsSync(modelPath) && (await whisperAvailable());
+}
+
 export interface RawWord {
   text: string;
   start: number;
