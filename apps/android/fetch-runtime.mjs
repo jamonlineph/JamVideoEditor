@@ -21,6 +21,8 @@ const REPO = process.env.TERMUX_REPO ?? "https://packages.termux.dev/apt/termux-
 const ABIS = { "arm64-v8a": "aarch64", x86_64: "x86_64" };
 /** Packages to install, and the programs from them that the engine runs. */
 const ROOTS = ["nodejs-lts", "ffmpeg", "espeak"];
+// Termux treats libcurl as essential, so packages can link it without declaring a dependency.
+const RUNTIME_DEPS = ["libcurl"];
 const PROGRAMS = { node: "node", ffmpeg: "ffmpeg", ffprobe: "ffprobe", "espeak-ng": "espeak-ng" };
 /** Libraries every Android device has (the NDK's stable system libraries): never bundled. */
 const SYSTEM_LIBS = new Set([
@@ -124,7 +126,7 @@ for (const abi of abis) {
   const arch = ABIS[abi];
   console.log(`== ${abi} (${arch})`);
   const index = await packageIndex(arch);
-  const pkgs = closure(index, ROOTS);
+  const pkgs = closure(index, [...ROOTS, ...RUNTIME_DEPS]);
   console.log(`  ${pkgs.length} packages: ${pkgs.map((p) => p.name).join(" ")}`);
   for (const r of ROOTS) console.log(`  ${r} ${index.get(r).version}`);
 
