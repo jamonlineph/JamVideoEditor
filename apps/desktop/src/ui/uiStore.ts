@@ -7,9 +7,11 @@ export interface UiState {
   playing: boolean;
   loop: boolean;
   pxPerSecond: number;
-  dockTab: "media" | "audio" | "text" | "captions" | "effects" | "transitions" | "filters" | "luts" | "stickers";
+  dockTab: "media" | "audio" | "text" | "captions" | "roughCut" | "effects" | "transitions" | "filters" | "luts" | "stickers";
   panel: string | null;
   showGuides: boolean;
+  showSocialSafeArea?: boolean;
+  focusTitleId?: string;
   previewQuality: "auto" | "draft" | "high";
   recorder: boolean;
   exportOpen: boolean;

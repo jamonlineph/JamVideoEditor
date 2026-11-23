@@ -68,9 +68,9 @@ function pickFiles(opts: { extensions?: string[]; multi?: boolean } = {}): Promi
   });
 }
 
-function download(file: string) {
+function download(file: string, share = false) {
   const a = document.createElement("a");
-  a.href = `/web/file?download=1&path=${encodeURIComponent(file)}`;
+  a.href = `/web/file?download=1&path=${encodeURIComponent(file)}${share ? "&share=1" : ""}`;
   a.download = file.split("/").pop() ?? "export";
   document.body.appendChild(a);
   a.click();
@@ -83,6 +83,7 @@ export const ipcRenderer = {
     if (channel === "upload-files") return uploadFiles(arg as File[]);
     if (channel === "mic-access") return true;
     if (channel === "reveal") return download(String(arg));
+    if (channel === "share-export") return download(String(arg), true);
     // "ensure-engine": the page was served by the engine, so its address never changes.
     throw new Error(`Not available in the browser: ${channel}`);
   },

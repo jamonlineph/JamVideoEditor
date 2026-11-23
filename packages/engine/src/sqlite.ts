@@ -27,10 +27,11 @@ function load(): typeof DatabaseSync {
 export type Database = DatabaseSync;
 
 /** Open a database file with WAL journaling and a busy timeout (shared by the library and projects). */
-export function openDatabase(file: string): Database {
+export function openDatabase(file: string, readOnly = false): Database {
   const Db = load();
-  const db = new Db(file);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;");
+  const db = new Db(file, { readOnly });
+  db.exec("PRAGMA busy_timeout = 3000;");
+  if (!readOnly) db.exec("PRAGMA journal_mode = WAL;");
   return db;
 }
 

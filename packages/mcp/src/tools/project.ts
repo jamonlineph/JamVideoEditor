@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { AspectRatioSchema, EditError, FpsSchema, ResolutionSchema, addMediaToTimeline, compositionDuration, mainTrack, setBrief } from "@openedits/core";
-import { AutopilotWatcher, expandHome, listAutopilotJobs } from "@openedits/engine";
+import { AutopilotWatcher, expandHome, listAutopilotJobs, transcriptionAvailable } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
-import { expectedVersion, mutate, projectSummary, round, summarize } from "./common.js";
+import { expectedVersion, mutate, projectSummary, round, summarize, summarizeProject } from "./common.js";
 
 const canvasInput = z
   .object({ aspectRatio: AspectRatioSchema.optional(), resolution: ResolutionSchema.optional(), fps: FpsSchema.optional() })
@@ -26,6 +26,67 @@ function resolveFiles(ctx: ToolContext, files: string[]): string[] {
 }
 
 export const projectTools = [
+  defineTool({
+    name: "projectTemplates",
+    title: "List project templates",
+    category: "project",
+    description: "List built-in and saved creator templates.",
+    input: z.object({}),
+    readOnly: true,
+    handler: (_a, ctx) => ({ templates: ctx.host.listTemplates() }),
+  }),
+  defineTool({
+    name: "saveProjectTemplate",
+    title: "Save as template",
+    category: "project",
+    description: "Save titles, brand overlays, music, caption style and export settings from the open edit as a reusable local template.",
+    input: z.object({ name: z.string().trim().min(1).max(80) }),
+    handler: (a, ctx) => ({ template: ctx.host.saveTemplate(a.name) }),
+  }),
+  defineTool({
+    name: "newProjectFromTemplate",
+    title: "Use project template",
+    category: "project",
+    description: "Start a new project from a listed template, ready to add new footage.",
+    input: z.object({ templateId: z.string(), name: z.string().trim().min(1).max(80).optional() }),
+    handler: (a, ctx) => ({ projectId: ctx.host.startFromTemplate(a.templateId, a.name, ctx.source) }),
+  }),
+  defineTool({
+    name: "backupProject",
+    title: "Save project backup",
+    category: "project",
+    description: "Save the current edit to a new folder inside destination. collectMedia copies the source files beside the project manifest.",
+    input: z.object({ destination: z.string().min(1), collectMedia: z.boolean().default(true), projectId: z.string().optional() }),
+    handler: async (a, ctx) => {
+      if (a.projectId !== undefined && a.projectId !== ctx.host.projectId) throw new EditError("VERSION_CONFLICT", "The open project changed while choosing a backup location.");
+      return { path: await ctx.host.backupProject(a.destination, a.collectMedia) };
+    },
+  }),
+  defineTool({
+    name: "openProjectBackup",
+    title: "Open project backup",
+    category: "project",
+    description: "Open a backup manifest as a new project without replacing an existing project.",
+    input: z.object({ path: z.string().min(1) }),
+    handler: (a, ctx) => ({ projectId: ctx.host.openProjectBackup(a.path) }),
+  }),
+  defineTool({
+    name: "projectTrash",
+    title: "List trashed projects",
+    category: "project",
+    description: "List projects that can be restored from workspace Trash.",
+    input: z.object({}),
+    readOnly: true,
+    handler: (_a, ctx) => ({ projects: ctx.host.listTrash() }),
+  }),
+  defineTool({
+    name: "restoreProject",
+    title: "Restore from Trash",
+    category: "project",
+    description: "Restore a project listed by projectTrash to the project library.",
+    input: z.object({ entry: z.string() }),
+    handler: (a, ctx) => ({ project: ctx.host.restoreTrash(a.entry) }),
+  }),
   defineTool({
     name: "projects",
     title: "List projects",
@@ -189,27 +250,40 @@ export const projectTools = [
         for (const asset of imported.assets) addMediaToTimeline(c, c.draft.media[asset.id], {});
         if (a.brief) setBrief(c, a.brief);
       });
-      return { ...res, projectId: p.id, mediaIds: imported.assets.map((m) => m.id), project: projectSummary(ctx) };
+      const hdr = imported.assets.some((media) => media.colorTransfer === "smpte2084" || media.colorTransfer === "arib-std-b67");
+      const warnings = [...(res.warnings ?? []), ...(hdr ? ["HDR footage will export as SDR without tone mapping. Colors may look different."] : [])];
+      return { ...res, ...(warnings.length ? { warnings } : {}), projectId: p.id, mediaIds: imported.assets.map((m) => m.id), project: projectSummary(ctx) };
     },
   }),
   defineTool({
     name: "get_project",
     title: "Get project overview",
     category: "project",
-    description: "Overview of the open project (or projectId): brief, duration, main-track clips, media, revisions, and analysis status.",
+    description: "Overview of the open project (or projectId): brief, duration, main-track clips, media, revisions, and analysis status. Inspecting another project leaves the active editor session unchanged.",
     input: z.object({ projectId: z.string().optional() }),
     readOnly: true,
-    handler: (a, ctx) => {
-      if (a.projectId && a.projectId !== ctx.host.appState.openProjectId) ctx.host.openProject(a.projectId);
-      const p = ctx.host.project;
+    handler: async (a, ctx) => {
+      const overview = ctx.host.readProjectOverview(a.projectId);
+      const p = overview.project;
+      const media = Object.values(p.media);
+      const transcribed = new Set(overview.transcribedMediaIds);
+      const audioMedia = media.filter((asset) => asset.hasAudio);
       return {
-        project: projectSummary(ctx),
+        project: summarizeProject(p, overview),
         brief: p.brief,
         durationSeconds: round(compositionDuration(p)),
         clips: mainTrack(p).elementIds.map((id, index) => ({ index, ...summarize(p, p.elements[id]) })),
-        media: Object.values(p.media).map((m) => ({ id: m.id, name: m.name, kind: m.kind, durationSourceSeconds: m.durationSourceSeconds, width: m.width, height: m.height })),
-        revisions: ctx.host.listRevisions(),
-        analysis: { transcripts: "not available until Phase 4 (transcribeClip)", silences: "use findPauses", loudness: "use loudness" },
+        media: media.map((m) => ({ id: m.id, name: m.name, kind: m.kind, durationSourceSeconds: m.durationSourceSeconds, width: m.width, height: m.height })),
+        revisions: overview.revisions,
+        analysis: {
+          transcripts: {
+            available: await transcriptionAvailable(ctx.host.settings.whisperModelPath),
+            transcribedMediaIds: audioMedia.filter((asset) => transcribed.has(asset.id)).map((asset) => asset.id),
+            missingMediaIds: audioMedia.filter((asset) => !transcribed.has(asset.id)).map((asset) => asset.id),
+          },
+          silences: "use findPauses",
+          loudness: "use loudness",
+        },
       };
     },
   }),

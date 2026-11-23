@@ -113,13 +113,16 @@ export function summarize(project: Project, el: Element) {
 export function projectSummary(ctx: ToolContext) {
   const h = ctx.host;
   if (!h.isOpen) return null;
-  const p = h.project;
+  return summarizeProject(h.project, h.session);
+}
+
+export function summarizeProject(p: Project, history: { version: number; canUndo: boolean; canRedo: boolean }) {
   return {
     id: p.id,
     name: p.name,
-    version: h.session.version,
-    canUndo: h.session.canUndo,
-    canRedo: h.session.canRedo,
+    version: history.version,
+    canUndo: history.canUndo,
+    canRedo: history.canRedo,
     durationSeconds: round(compositionDuration(p)),
     canvas: p.canvas,
     trackCount: p.tracks.length,

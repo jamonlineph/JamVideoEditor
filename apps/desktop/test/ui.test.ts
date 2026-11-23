@@ -44,12 +44,14 @@ describe("desktop app", () => {
     expect(await app.eval(clickButton("Home", ".editor-titlebar"))).toBe(true);
     await app.waitFor(`!!document.querySelector(".project-card")`);
     expect(await app.eval(`window.openedits.live.state.appState.openProjectId`)).toBe(id);
-    expect(await app.eval(clickButton("MCP settings", ".home-titlebar"))).toBe(true);
+    expect(await app.eval(clickButton("Settings", ".home-nav"))).toBe(true);
+    expect(await app.eval(clickButton("MCP settings", ".settings-mcp"))).toBe(true);
     await app.waitFor(`document.querySelector("#mcp-url")?.value.endsWith("/mcp")`);
     expect(await app.eval(`document.querySelector(".mcp-config").value.includes("Bearer ••••••••")`)).toBe(true);
     expect(await app.eval(clickButton("Show token", ".mcp-dialog"))).toBe(true);
     await app.waitFor(`JSON.parse(document.querySelector(".mcp-config").value).mcpServers.jamvideoeditor.headers.Authorization.startsWith("Bearer ") && !document.querySelector(".mcp-config").value.includes("••••••••")`);
     await app.eval(`document.querySelector('button[aria-label="Close MCP settings"]').click()`);
+    expect(await app.eval(clickButton("Projects", ".home-nav"))).toBe(true);
     expect(await app.eval(clickButton("Resume editing", ".resume-project"))).toBe(true);
     await app.waitFor(`!!document.querySelector(".editor .timeline")`);
     expect(await app.eval(`window.openedits.live.state.project.id`)).toBe(id);
@@ -238,5 +240,16 @@ describe("desktop app", () => {
     })()`);
     await app.waitFor(`window.openedits.live.state.project.elements[${titleId}].style.fontSizeNorm === 0.1`);
     expect(await app.eval<number>("window.openedits.live.state.version")).toBe(before + 1);
+  });
+
+  it("shows missing footage in Export and offers a Locate action", async () => {
+    const file = path.join(ws, "offline-source.mp4");
+    fs.copyFileSync(media.counter, file);
+    await app.call("create_project", { files: [file] });
+    await app.waitFor(`!!document.querySelector(".lane.main .clip")`);
+    fs.renameSync(file, path.join(ws, "moved-source.mp4"));
+    expect(await app.eval(clickButton("Export", ".editor-header-actions"))).toBe(true);
+    await app.waitFor(`!!document.querySelector('.export-missing button[aria-label="Locate offline-source.mp4"]')`);
+    expect(await app.eval(`[...document.querySelectorAll(".export-actions button")].find(b => b.textContent === "Export").disabled`)).toBe(true);
   });
 });

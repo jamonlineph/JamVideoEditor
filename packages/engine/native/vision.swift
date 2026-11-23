@@ -137,15 +137,18 @@ func track() {
   emit(["frames": out, "lost": lost])
 }
 
+@available(macOS 14.0, *)
 func instanceRequest(_ kind: String) -> VNImageBasedRequest {
   kind == "person" ? VNGeneratePersonInstanceMaskRequest() : VNGenerateForegroundInstanceMaskRequest()
 }
 
+@available(macOS 14.0, *)
 func instanceResult(_ req: VNImageBasedRequest) -> VNInstanceMaskObservation? {
   req.results?.first as? VNInstanceMaskObservation
 }
 
 /// Instances to keep: the one under `point` (top-left normalized), or all of them.
+@available(macOS 14.0, *)
 func pickInstances(_ obs: VNInstanceMaskObservation, point: [Double]) -> IndexSet {
   guard point.count == 2 else { return obs.allInstances }
   let mask = obs.instanceMask
@@ -158,6 +161,7 @@ func pickInstances(_ obs: VNInstanceMaskObservation, point: [Double]) -> IndexSe
   return id == 0 ? IndexSet() : IndexSet(integer: id)
 }
 
+@available(macOS 14.0, *)
 func cutout() {
   guard let out = options["out"] else { fail("--out is required") }
   let t = numbers("time").first ?? 0
@@ -200,6 +204,9 @@ func masks() {
   let times = numbers("times")
   guard let w = Int(options["width"] ?? ""), let h = Int(options["height"] ?? ""), w > 0, h > 0 else { fail("--width and --height are required") }
   let kind = options["kind"] ?? "person"
+  if kind != "person" {
+    guard #available(macOS 14.0, *) else { fail("Foreground subject masks require macOS 14 or later") }
+  }
   let ctx = CIContext()
   let gray = CGColorSpaceCreateDeviceGray()
   var bytes = [UInt8](repeating: 0, count: w * h)
@@ -215,7 +222,7 @@ func masks() {
         req.outputPixelFormat = kCVPixelFormatType_OneComponent8
         try? handler.perform([req])
         if let buf = req.results?.first?.pixelBuffer { mask = CIImage(cvPixelBuffer: buf) }
-      } else {
+      } else if #available(macOS 14.0, *) {
         let req = VNGenerateForegroundInstanceMaskRequest()
         try? handler.perform([req])
         if let obs = req.results?.first, let buf = try? obs.generateScaledMaskForImage(forInstances: obs.allInstances, from: handler) { mask = CIImage(cvPixelBuffer: buf) }
@@ -236,7 +243,9 @@ switch command {
 case "subjects": subjects()
 case "saliency": saliency()
 case "track": track()
-case "cutout": cutout()
+case "cutout":
+  guard #available(macOS 14.0, *) else { fail("Instance cutouts require macOS 14 or later") }
+  cutout()
 case "masks": masks()
 default: fail("Unknown command \(command)")
 }

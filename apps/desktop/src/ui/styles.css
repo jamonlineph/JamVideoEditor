@@ -606,6 +606,22 @@ kbd {
   --text-el: #6e4cb1;
   --caption: #5745a0;
 }
+.editor-shell.has-media-notice { grid-template-rows: var(--titlebar-h) auto auto minmax(0, 1fr); }
+.media-notice, .export-missing li { display: flex; align-items: center; gap: 10px; }
+.media-notice { padding: 4px 12px; background: var(--panel-3); font-size: 13px; }
+.export-missing ul { padding: 0; max-height: 135px; overflow: auto; }
+.export-missing li { justify-content: space-between; margin: 4px 0; }
+.export-missing li span { overflow-wrap: anywhere; }
+.captions-workflow { display: grid; gap: 10px; }
+.captions-workflow > form { margin: 0; }
+.caption-setup { padding: 10px; border-radius: 8px; background: var(--panel-3); }
+.caption-setup p { margin: 6px 0; }
+.caption-cue input { min-width: 0; }
+.cut-suggestion { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.cut-suggestion p { grid-column: 1 / -1; margin: 0; }
+.clip:focus-visible { outline: 2px solid var(--select); outline-offset: -2px; }
+.social-safe-area { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); overflow: hidden; pointer-events: none; }
+.social-safe-area > div { position: absolute; inset: 12% 14% 24% 8%; border: 1px dashed #fff; box-shadow: 0 0 0 1200px rgb(0 0 0 / 24%); }
 .editor-icon {
   width: 19px;
   height: 19px;

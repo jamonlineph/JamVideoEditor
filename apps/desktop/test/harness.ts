@@ -27,26 +27,32 @@ export class AppHarness {
     });
   }
 
-  static async launch(workspace: string): Promise<AppHarness> {
+  static async launch(workspace: string, packagedExecutable?: string): Promise<AppHarness> {
     // The real Electron binary (not the node wrapper in .bin) so the IPC channel reaches the app.
-    const electron = createRequire(path.join(ROOT, "package.json"))("electron") as string;
+    const electron = packagedExecutable ?? (createRequire(path.join(ROOT, "package.json"))("electron") as string);
     // Chromium refuses to start as root with its sandbox on (containers, CI).
     const flags = process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [];
-    const child = spawn(electron, [path.join(ROOT, "apps/desktop"), ...flags], {
+    const child = spawn(electron, packagedExecutable ? flags : [path.join(ROOT, "apps/desktop"), ...flags], {
       env: { ...process.env, OPENEDITS_UI_TEST: "1", OPENEDITS_WORKSPACE: workspace, ELECTRON_RUN_AS_NODE: undefined },
       stdio: ["ignore", "ignore", "inherit", "ipc"],
     });
     const app = new AppHarness(child, workspace);
-    app.port = await new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("The app did not start")), 45_000);
-      child.on("message", (m: { ready?: boolean; port?: number }) => {
-        if (m.ready) {
-          clearTimeout(timer);
-          resolve(m.port!);
-        }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      app.port = await new Promise<number>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("The app did not start")), 45_000);
+        child.on("message", (m: { ready?: boolean; port?: number }) => {
+          if (m.ready) resolve(m.port!);
+        });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => reject(new Error(`The app exited (${code ?? signal})`)));
       });
-      child.on("exit", (code) => reject(new Error(`The app exited (${code})`)));
-    });
+    } catch (error) {
+      child.kill();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     return app;
   }
 

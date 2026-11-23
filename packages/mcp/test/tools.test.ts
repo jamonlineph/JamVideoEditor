@@ -84,6 +84,138 @@ describe("MCP tool surface", () => {
     expect(e2.error.code).toBe("PROJECT_NOT_FOUND");
   });
 
+  it("inspects a saved project without changing the active edit or recent projects", async () => {
+    const { clipA, music } = testMedia();
+    const { projectId: savedId, mediaIds: [clipId] } = await call("create_project", { files: [clipA], brief: "Saved brief" });
+    const { addedIds: [musicId] } = await call("importToMediaPanel", { paths: [music] });
+    host.store.saveTranscript({ mediaId: clipId, language: "en", model: "test", createdAt: 1, durationSourceSeconds: 6, words: [] });
+    await call("saveRevision", { label: "Initial cut" });
+    await call("setBrief", { brief: "Discarded brief" });
+    await call("undo");
+    const savedVersion = host.session.version;
+
+    const { projectId: activeId } = await call("newProject");
+    const { elementId } = await call("addText", { text: "Active edit", start: 0, duration: 2 });
+    await call("setSelection", { elementIds: [elementId] });
+    await call("setPlayhead", { seconds: 1 });
+    const before = host.appState;
+    const openedAt = host.requireProjectRow(savedId).openedAt;
+    const sessionFile = fs.readFileSync(host.paths.sessionFile, "utf8");
+
+    expect(await call("get_project", { projectId: savedId })).toMatchObject({
+      project: { id: savedId, version: savedVersion, canUndo: true, canRedo: true },
+      brief: "Saved brief",
+      clips: [{ mediaId: clipId }],
+      revisions: [{ label: "Initial cut" }],
+      analysis: { transcripts: { available: expect.any(Boolean), transcribedMediaIds: [clipId], missingMediaIds: [musicId] } },
+    });
+    expect(await call("get_project")).toMatchObject({ project: { id: activeId } });
+    expect(host.appState).toEqual(before);
+    expect(host.requireProjectRow(savedId).openedAt).toBe(openedAt);
+    expect(fs.readFileSync(host.paths.sessionFile, "utf8")).toBe(sessionFile);
+
+    await call("closeProject");
+    expect(await call("get_project", { projectId: savedId })).toMatchObject({ project: { id: savedId } });
+    expect(host.isOpen).toBe(false);
+    expect((await callError("get_project")).error.code).toBe("NO_PROJECT_OPEN");
+    expect((await callError("get_project", { projectId: "prj_missing" })).error.code).toBe("PROJECT_NOT_FOUND");
+    await call("deleteProject", { projectId: savedId });
+    await call("deleteProject", { projectId: activeId });
+  });
+
+  it("blocks final export with a missing source and relinks the original without changing clips", async () => {
+    const source = path.join(host.paths.inbox, "missing-move.mp4");
+    const moved = path.join(host.paths.inbox, "found-move.mp4");
+    fs.copyFileSync(testMedia().counter, source);
+    const { projectId, mediaIds: [mediaId] } = await call("create_project", { files: [source] });
+    const elementIds = [...host.project.tracks[0].elementIds];
+    try {
+      fs.renameSync(source, moved);
+      expect((await call("checkExportMedia")).missing).toEqual([{ mediaId, name: "missing-move.mp4", path: source }]);
+      expect((await callError("export", { preset: "fast-720p" })).error.code).toBe("FILE_NOT_FOUND");
+      expect(host.jobs.latest("export", projectId)).toBeUndefined();
+      expect((await callError("relinkMedia", { mediaId, path: testMedia().clipB })).error.code).toBe("UNSUPPORTED_MEDIA");
+      await call("relinkMedia", { mediaId, path: moved, projectId, expectedVersion: host.session.version });
+      expect((await call("checkExportMedia")).missing).toEqual([]);
+      expect(host.project.tracks[0].elementIds).toEqual(elementIds);
+      expect(host.project.media[mediaId].path).toBe(moved);
+    } finally {
+      await call("deleteProject", { projectId });
+      fs.rmSync(source, { force: true });
+      fs.rmSync(moved, { force: true });
+    }
+  });
+
+  it("round-trips subtitles, restores a collected project and reuses a creator template", async () => {
+    expect((await call("projectTemplates")).templates.map((item: Json) => item.id)).toContain("product-review");
+    const { projectId } = await call("newProjectFromTemplate", { templateId: "product-review" });
+    const source = path.join(host.paths.inbox, "review-capture.mp4");
+    const subtitle = path.join(host.paths.inbox, "review-caption.srt");
+    const projects = [projectId];
+    fs.copyFileSync(testMedia().counter, source);
+    fs.writeFileSync(subtitle, "\uFEFF1\r\n00:00:00,200 --> 00:00:01,100\r\nA useful review.\r\n");
+    try {
+      const { addedIds: [mediaId] } = await call("importToMediaPanel", { paths: [source] });
+      await call("addMedia", { mediaId });
+      const { elementIds } = await call("importSubtitles", { path: subtitle });
+      expect(elementIds).toHaveLength(1);
+      const exported = await call("exportSubtitles");
+      expect(fs.readFileSync(exported.path, "utf8")).toContain("00:00:00,200 --> 00:00:01,100\nA useful review.");
+      const model = await call("captionSetup");
+      expect(model).toMatchObject({ runtime: expect.any(Boolean), model: expect.any(Boolean) });
+      const { template } = await call("saveProjectTemplate", { name: "Recurring reviews" });
+      const backup = await call("backupProject", { destination: host.paths.root, collectMedia: true });
+      const deleted = await call("deleteProject", { projectId });
+      const { projects: trash } = await call("projectTrash");
+      const entry = trash.find((item: Json) => item.entry === path.basename(deleted.trashedTo));
+      expect(entry?.name).toBe("Product review");
+      await call("restoreProject", { entry: entry.entry });
+      await call("openProject", { projectId });
+      expect(host.project.media[mediaId].path).toBe(source);
+      fs.rmSync(source);
+      const restored = await call("openProjectBackup", { path: backup.path });
+      projects.push(restored.projectId);
+      expect(restored.projectId).not.toBe(projectId);
+      expect((await call("checkExportMedia")).missing).toEqual([]);
+      expect(host.project.elements[elementIds[0]].type).toBe("caption");
+      const reuse = await call("newProjectFromTemplate", { templateId: template.id });
+      projects.push(reuse.projectId);
+      expect(host.project.tracks[0].elementIds).toHaveLength(0);
+      expect(Object.values(host.project.elements).map((element) => element.type)).toEqual(["text"]);
+      expect(host.project.preferredCaptionStyle).toBe("clean");
+    } finally {
+      for (const id of projects) if (host.library.get(id)) await call("deleteProject", { projectId: id });
+      fs.rmSync(source, { force: true });
+      fs.rmSync(subtitle, { force: true });
+    }
+  });
+
+  it("only applies the reviewed rough-cut suggestions and can undo them together", async () => {
+    const { projectId, mediaIds: [mediaId] } = await call("create_project", { files: [testMedia().counter] });
+    try {
+      host.store.saveTranscript({
+        mediaId, language: "en", model: "test", createdAt: 1, durationSourceSeconds: 2,
+        words: [
+          { id: 1, text: "Uh", startSourceSeconds: 0.45, endSourceSeconds: 0.55, confidence: 1, isFiller: true },
+          { id: 2, text: "Hello.", startSourceSeconds: 1.0, endSourceSeconds: 1.35, confidence: 1, isFiller: false },
+        ],
+      });
+      const before = host.project;
+      const plan = await call("planRoughCut");
+      expect(plan.useWords).toBe(true);
+      expect(host.project).toBe(before);
+      expect(plan.suggestions.some((item: Json) => item.reasons.includes("Filler"))).toBe(true);
+      const range = plan.suggestions[0];
+      const result = await call("applyRoughCut", { projectId, version: plan.version, ranges: [{ start: range.start, end: range.end }] });
+      expect(result.removedSeconds).toBeCloseTo(range.end - range.start, 5);
+      expect((await callError("applyRoughCut", { projectId, version: plan.version, ranges: [range] })).error.code).toBe("VERSION_CONFLICT");
+      await call("undo");
+      expect(host.project).toEqual(before);
+    } finally {
+      await call("deleteProject", { projectId });
+    }
+  });
+
   it("composes caption edits in scope and replaces or resets presets in one undo step", async () => {
     const { projectId } = await call("newProject", { name: "Styling" });
     const { elementId: title } = await call("addText", { text: "Title", start: 0, duration: 2, presetId: "label_black" });

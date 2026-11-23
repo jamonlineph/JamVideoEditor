@@ -2,19 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import fs from "node:fs";
 import path from "node:path";
 import { ipcRenderer, webUtils } from "electron";
-import { CAPTION_STYLES, EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, fontStack, mainTrack, type MediaAsset } from "@openedits/core";
-import { fileUrl, live, selectedElements, useFeatures, useLive, WEB, WORKSPACE } from "./live.js";
+import { EFFECTS_CATALOG, FILTERS_CATALOG, LUTS_CATALOG, STICKERS_CATALOG, TEXT_PRESETS, TRANSITIONS_CATALOG, fontStack, mainTrack, type MediaAsset } from "@openedits/core";
+import { fileUrl, live, selectedElements, useLive, WEB, WORKSPACE } from "./live.js";
 import { ui, useUi, type UiState } from "./uiStore.js";
 import { PreviewTile } from "./PreviewTile.js";
+import { Captions } from "./Captions.js";
+import { RoughCut } from "./RoughCut.js";
 import { EditorIcon } from "./EditorIcon.js";
 import { MediaThumbnail } from "./TimelineFilmstrip.js";
 
 type DockTab = UiState["dockTab"];
 export const DOCK_LABEL: Record<DockTab, string> = {
-  media: "Media", audio: "Audio", text: "Text", captions: "Captions",
+  media: "Media", audio: "Audio", text: "Text", captions: "Captions", roughCut: "Rough cut",
   effects: "Effects", transitions: "Transitions", filters: "Filters", luts: "LUTs", stickers: "Stickers",
 };
-export const DOCK_RAIL = ["media", "audio", "text", "captions", "effects", "transitions", "filters", "stickers"] as const;
+export const DOCK_RAIL = ["media", "roughCut", "audio", "text", "captions", "effects", "transitions", "filters", "stickers"] as const;
+
+export const dockIcon = (tab: DockTab) => tab === "luts" ? "filters" : tab === "roughCut" ? "split" : tab;
 
 function fmt(sec?: number) {
   if (sec === undefined) return "";
@@ -25,7 +29,12 @@ function fmt(sec?: number) {
 /** Import files into the media panel (asks with the file picker when no paths are given). */
 export async function importFiles(paths?: string[]) {
   const files = paths ?? ((await ipcRenderer.invoke("pick-files", {})) as string[]);
-  if (files.length) await live.run("importToMediaPanel", { paths: files });
+  if (files.length) {
+    const result = await live.run<{ media: MediaAsset[] }>("importToMediaPanel", { paths: files });
+    if (result?.media.some((media) => media.colorTransfer === "smpte2084" || media.colorTransfer === "arib-std-b67")) {
+      live.toast("info", "HDR footage will export as SDR without tone mapping. Colors may look different.");
+    }
+  }
 }
 
 /**
@@ -46,19 +55,21 @@ export async function droppedPaths(e: React.DragEvent): Promise<string[]> {
     .filter(Boolean);
 }
 
-export function Dock({ onClose }: { onClose: () => void }) {
+export function Dock({ onClose, onEditTitle, audition }: { onClose: () => void; onEditTitle: (id: string) => Promise<void>; audition: (start: number, end: number) => void }) {
   const tab = useUi("dockTab");
   return (
     <div className="dock">
       <div className="dock-heading">
-        <h2><EditorIcon name={tab === "luts" ? "filters" : tab} />{DOCK_LABEL[tab]}</h2>
+        <h2><EditorIcon name={dockIcon(tab)} />{DOCK_LABEL[tab]}</h2>
         <button className="icon ghost" title="Close library" aria-label="Close library" onClick={onClose}><EditorIcon name="close" /></button>
       </div>
       <div className="pane">
         {tab === "media" && <MediaTab />}
         {tab === "audio" && <AudioTab />}
-        {(tab === "text" || tab === "captions") && <TextTab captions={tab === "captions"} />}
-        {tab !== "media" && tab !== "audio" && tab !== "text" && tab !== "captions" && <EffectsTab tab={tab} />}
+        {tab === "text" && <TextTab onEditTitle={onEditTitle} />}
+        {tab === "captions" && <Captions />}
+        {tab === "roughCut" && <RoughCut audition={audition} />}
+        {tab !== "media" && tab !== "audio" && tab !== "text" && tab !== "captions" && tab !== "roughCut" && <EffectsTab tab={tab} />}
       </div>
     </div>
   );
@@ -231,18 +242,18 @@ function AudioTab() {
   );
 }
 
-function TextTab({ captions }: { captions: boolean }) {
-  const s = useLive();
-  const features = useFeatures();
-  const add = (presetId: string, text = "Your text") => void live.run("addText", { text, start: ui.get().playhead, duration: 3, presetId });
-  const hasMain = mainTrack(s.project!).elementIds.length > 0;
+function TextTab({ onEditTitle }: { onEditTitle: (id: string) => Promise<void> }) {
+  const add = async (presetId: string) => {
+    const result = await live.run<{ elementId: string }>("addText", { text: "Your text", start: ui.get().playhead, duration: 3, presetId });
+    if (result) await onEditTitle(result.elementId);
+  };
   return (
     <>
       <div className="dock-subhead">
-        <strong>{captions ? "Caption styles" : "Styles"}</strong>
-        {!captions && <button className="ghost" onClick={() => add("classic")}>＋ Add title</button>}
+        <strong>Styles</strong>
+        <button className="ghost" onClick={() => void add("classic")}>＋ Add title</button>
       </div>
-      {!captions && <div className="tiles text-style-grid">
+      <div className="tiles text-style-grid">
         {TEXT_PRESETS.map((p) => {
           const st = p.data.style;
           return (
@@ -266,36 +277,7 @@ function TextTab({ captions }: { captions: boolean }) {
             </button>
           );
         })}
-      </div>}
-      {captions && <>
-      <div className="muted small" style={{ marginBottom: 6 }}>
-        {features && !features.transcription
-          ? "Captions need whisper.cpp (whisper-cli) and a Whisper model, which are not installed on this computer. See the README for setup."
-          : hasMain
-            ? "Transcribes the main track (on-device) and adds captions in this style."
-            : "Add a talking clip first."}
       </div>
-      <div className="tiles">
-        {CAPTION_STYLES.map((c) => (
-          <button
-            key={c.id}
-            className="tile"
-            onClick={() => {
-              if (features && !features.transcription) return live.toast("info", "Captions need whisper.cpp (whisper-cli) and a Whisper model. Run `openedits doctor` for setup steps.");
-              if (!hasMain) return live.toast("info", "Add a talking clip to the main track first");
-              live.toast("info", "Transcribing and adding captions…");
-              void live.run("generateCaptions", { style: c.id }).then((r) => r && live.toast("info", "Captions added"));
-            }}
-            title={`Captions: ${c.name} (${c.data.mode})`}
-          >
-            <span style={{ fontFamily: fontStack(c.data.style.fontFamily), fontWeight: c.data.style.fontWeight, textTransform: c.data.style.uppercase ? "uppercase" : undefined, fontSize: 13 }}>
-              word <span style={{ color: c.data.mode === "box" ? "#fff" : c.data.highlightColor, background: c.data.mode === "box" ? c.data.highlightColor : undefined, padding: "0 3px", borderRadius: 3 }}>by</span> word
-            </span>
-            <span className="label">{c.name}</span>
-          </button>
-        ))}
-      </div>
-      </>}
     </>
   );
 }

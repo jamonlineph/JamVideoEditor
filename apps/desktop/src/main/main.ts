@@ -42,6 +42,7 @@ function useBundledTools() {
   const tools: [string, string][] = [
     ["OPENEDITS_FFMPEG", `ffmpeg${exe}`],
     ["OPENEDITS_FFPROBE", `ffprobe${exe}`],
+    ["OPENEDITS_WHISPER", `whisper-cli${exe}`],
     ["OPENEDITS_VISION", "openedits-vision"],
   ];
   for (const [env, file] of tools) {
@@ -208,6 +209,10 @@ ipcMain.handle("ensure-engine", async () => {
 });
 ipcMain.handle("copy-text", (_e, value: string) => clipboard.writeText(value));
 ipcMain.handle("reveal", (_e, file: string) => shell.showItemInFolder(file));
+ipcMain.handle("pick-directory", async () => {
+  const picked = await dialog.showOpenDialog(win!, { title: "Choose a location for the backup", properties: ["openDirectory", "createDirectory"] });
+  return picked.canceled ? undefined : picked.filePaths[0];
+});
 
 /** Test hook: the test runner drives the window over the Node IPC channel. */
 function testHarness() {

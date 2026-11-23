@@ -5,9 +5,11 @@ import { randomUUID } from "node:crypto";
 import {
   EditError,
   Session,
+  addText,
   addMediaAssets,
   compositionDuration,
   createProject,
+  getCatalogItem,
   randomIds,
   type Canvas,
   type CommitResult,
@@ -19,6 +21,8 @@ import {
 } from "@openedits/core";
 import { Library, type ProjectFilter, type ProjectRow, type ProjectSort } from "./library.js";
 import { ProjectStore, type RevisionInfo } from "./projectStore.js";
+import { readPortableProject, writePortableProject } from "./portableProject.js";
+import { CREATOR_TEMPLATES, listCreatorTemplates, readCreatorTemplate, saveCreatorTemplate } from "./templates.js";
 import { acquireLock } from "./lock.js";
 import { expandHome } from "./ffmpeg.js";
 import { createFfprobe, type Prober } from "./media/probe.js";
@@ -212,12 +216,66 @@ export class EngineHost extends EventEmitter {
     const now = this.now();
     const name = opts.name?.trim() || `Project ${this.library.list().length + 1}`;
     const project = createProject({ id, name, canvas: opts.canvas, ids: this.ids, now });
-    const dir = this.projectDir(id);
-    const store = ProjectStore.create(dir, project, now);
-    store.close();
-    this.library.create({ id, name, dir, aspectRatio: project.canvas.aspectRatio, now });
-    this.openProject(id);
+    this.addProject(project);
     return project;
+  }
+
+  private addProject(project: Project) {
+    const { id, name } = project;
+    const now = this.now();
+    const dir = this.projectDir(id);
+    fs.mkdirSync(dir);
+    try {
+      const store = ProjectStore.create(dir, project, now);
+      store.close();
+      this.library.create({ id, name, dir, aspectRatio: project.canvas.aspectRatio, now });
+    } catch (error) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw error;
+    }
+    this.library.updateSummary(id, { updatedAt: now, durationSeconds: compositionDuration(project) });
+    this.openProject(id);
+  }
+
+  backupProject(destination: string, collectMedia: boolean) {
+    return writePortableProject(this.project, destination, collectMedia);
+  }
+
+  openProjectBackup(file: string) {
+    const project = readPortableProject(file);
+    project.id = this.ids("prj");
+    project.createdAt = this.now();
+    this.addProject(project);
+    return project.id;
+  }
+
+  listTemplates() { return listCreatorTemplates(path.join(this.paths.root, "templates")); }
+
+  saveTemplate(name: string) {
+    return saveCreatorTemplate(path.join(this.paths.root, "templates"), name, this.project);
+  }
+
+  startFromTemplate(templateId: string, name: string | undefined, source: string) {
+    const builtin = CREATOR_TEMPLATES.find((item) => item.id === templateId);
+    if (builtin) {
+      const preset = getCatalogItem("textPresets", builtin.titleStyle);
+      const id = this.ids("prj");
+      const project = createProject({ id, name: name ?? builtin.name, ids: this.ids, now: this.now() });
+      project.preferredCaptionStyle = builtin.caption;
+      this.addProject(project);
+      const { style } = preset.data as { style?: Partial<import("@openedits/core").TextStyle> };
+      this.mutate("Add template title", source, (ctx) => addText(ctx, {
+        text: builtin.title, start: 0, duration: 3, presetId: preset.id,
+        style, transform: { y: 0.18 },
+      }));
+      return id;
+    }
+    const project = readCreatorTemplate(path.join(this.paths.root, "templates"), templateId);
+    project.id = this.ids("prj");
+    project.name = name ?? project.name;
+    project.createdAt = this.now();
+    this.addProject(project);
+    return project.id;
   }
 
   openProject(id: string): Project {
@@ -297,10 +355,74 @@ export class EngineHost extends EventEmitter {
     const row = this.requireProjectRow(id);
     if (this.current?.id === id) this.closeProject();
     const dest = path.join(this.paths.trash, `${id}-${this.now()}`);
-    if (fs.existsSync(row.dir)) fs.renameSync(row.dir, dest);
-    this.library.delete(id);
+    const exists = fs.existsSync(row.dir);
+    if (exists) {
+      fs.writeFileSync(path.join(row.dir, "trash-info.json"), JSON.stringify(row));
+      fs.renameSync(row.dir, dest);
+    }
+    try {
+      this.library.delete(id);
+    } catch (error) {
+      if (exists) fs.renameSync(dest, row.dir);
+      throw error;
+    }
     this.setAppState({ homeSelection: this._appState.homeSelection.filter((x) => x !== id) });
     return { projectId: id, trashedTo: dest };
+  }
+
+  private trashedProject(entry: string): { row: ProjectRow; deletedAt: number } {
+    const match = /^([\w-]+)-(\d+)$/.exec(entry);
+    if (!match) throw new EditError("PROJECT_NOT_FOUND", "Trash entry unavailable.");
+    const [, id, deletedAt] = match;
+    const folder = path.join(this.paths.trash, entry);
+    if (!fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new EditError("PROJECT_NOT_FOUND", "Trash entry unavailable.");
+    }
+    const dir = this.projectDir(id);
+    try {
+      const previous = JSON.parse(fs.readFileSync(path.join(folder, "trash-info.json"), "utf8")) as ProjectRow;
+      if (previous.id === id) return { row: { ...previous, dir }, deletedAt: Number(deletedAt) };
+    } catch {
+      // Projects deleted before Trash was added have only the project database.
+    }
+    const { project } = ProjectStore.readOverview(folder);
+    if (project.id !== id) throw new EditError("PROJECT_NOT_FOUND", "Trash entry does not match its project.");
+    return {
+      deletedAt: Number(deletedAt),
+      row: {
+        id, dir, name: project.name, aspectRatio: project.canvas.aspectRatio,
+        createdAt: project.createdAt, updatedAt: Number(deletedAt), openedAt: null,
+        pinned: false, favorite: false, thumbnailPath: null, durationSeconds: compositionDuration(project),
+      },
+    };
+  }
+
+  listTrash() {
+    return fs.readdirSync(this.paths.trash, { withFileTypes: true }).flatMap((entry) => {
+      if (!entry.isDirectory()) return [];
+      try {
+        const { row, deletedAt } = this.trashedProject(entry.name);
+        return [{ entry: entry.name, name: row.name, deletedAt }];
+      } catch {
+        return [];
+      }
+    }).sort((a, b) => b.deletedAt - a.deletedAt);
+  }
+
+  restoreTrash(entry: string) {
+    const { row } = this.trashedProject(entry);
+    if (this.library.get(row.id) || fs.existsSync(row.dir)) {
+      throw new EditError("INVALID_ARGUMENT", "A project with this ID already exists.");
+    }
+    const folder = path.join(this.paths.trash, entry);
+    fs.renameSync(folder, row.dir);
+    try {
+      this.library.restore(row);
+    } catch (error) {
+      fs.renameSync(row.dir, folder);
+      throw error;
+    }
+    return row;
   }
 
   togglePin(id: string): boolean {
@@ -348,6 +470,22 @@ export class EngineHost extends EventEmitter {
 
   get project(): Project {
     return this.requireOpen().session.state;
+  }
+
+  /** Inspect any project without taking its edit lock or changing the editor session. */
+  readProjectOverview(projectId?: string) {
+    if (projectId !== undefined && projectId !== this.current?.id) {
+      return ProjectStore.readOverview(this.requireProjectRow(projectId).dir);
+    }
+    const { session, store } = this.requireOpen();
+    return {
+      project: session.state,
+      version: session.version,
+      canUndo: session.canUndo,
+      canRedo: session.canRedo,
+      revisions: store.listRevisions(),
+      transcribedMediaIds: store.listTranscribedMediaIds(),
+    };
   }
 
   get projectId(): string {
@@ -439,6 +577,27 @@ export class EngineHost extends EventEmitter {
       this.mutate(`Import ${toAdd.length} media file${toAdd.length > 1 ? "s" : ""}`, opts.source ?? "engine", (ctx) => addMediaAssets(ctx, toAdd), { skipFinalize: true });
     }
     return { assets, added: toAdd.map((a) => a.id), existing };
+  }
+
+  /** Reconnect an imported source without changing clip, transcript or asset IDs. */
+  async relinkMedia(mediaId: string, file: string, source: string, expectedVersion?: number) {
+    const target = this.requireOpen();
+    const asset = target.session.state.media[mediaId];
+    if (!asset) throw new EditError("MEDIA_NOT_FOUND", `No media with id "${mediaId}"`);
+    const replacement = path.resolve(expandHome(file));
+    const probe = await this.prober(replacement);
+    if (this.current !== target) throw new EditError("VERSION_CONFLICT", "The open project changed while locating media.");
+    if (probe.kind !== asset.kind || probe.hasAudio !== asset.hasAudio || probe.hasVideo !== asset.hasVideo
+      || probe.width !== asset.width || probe.height !== asset.height
+      || (asset.sizeBytes > 0 && probe.sizeBytes !== asset.sizeBytes)
+      || Math.abs((probe.durationSourceSeconds ?? 0) - (asset.durationSourceSeconds ?? 0)) > 0.05) {
+      throw new EditError("UNSUPPORTED_MEDIA", `Choose the original file for ${asset.name}. The selected file does not match.`);
+    }
+    return this.mutate(`Locate ${asset.name}`, source, (c) => {
+      const current = c.draft.media[mediaId];
+      if (!current || current.path !== asset.path) throw new EditError("VERSION_CONFLICT", "The media changed while locating it.");
+      current.path = replacement;
+    }, { expectedVersion, skipFinalize: true });
   }
 
   // ------------------------------------------------------------------ watch folders & style guide

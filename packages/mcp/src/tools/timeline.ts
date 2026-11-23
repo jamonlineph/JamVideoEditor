@@ -53,6 +53,20 @@ function referencedMediaIds(ctx: ToolContext): Set<string> {
 
 export const timelineTools = [
   defineTool({
+    name: "relinkMedia",
+    title: "Locate missing media",
+    category: "timeline",
+    description: "Reconnect the original file to an existing media asset, keeping clips, trims and transcripts.",
+    input: z.object({ mediaId: z.string(), path: z.string().min(1), projectId: z.string().optional(), expectedVersion }),
+    handler: async (a, ctx) => {
+      if (a.projectId !== undefined && a.projectId !== ctx.host.projectId) {
+        throw new EditError("VERSION_CONFLICT", "Reopen the project before locating its media.");
+      }
+      const result = await ctx.host.relinkMedia(a.mediaId, a.path, ctx.source, a.expectedVersion);
+      return { ok: true, mediaId: a.mediaId, version: result.version };
+    },
+  }),
+  defineTool({
     name: "importToMediaPanel",
     title: "Import to media panel",
     category: "timeline",

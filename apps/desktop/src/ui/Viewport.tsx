@@ -45,6 +45,7 @@ export const Viewport = forwardRef<ViewportApi, { blocked: boolean; onImportMedi
   const playing = useUi("playing");
   const loop = useUi("loop");
   const showGuides = useUi("showGuides");
+  const showSocialSafeArea = useUi("showSocialSafeArea");
   const showRecorder = useUi("recorder");
   const quality = useUi("previewQuality");
   const project = s.project!;
@@ -254,6 +255,9 @@ export const Viewport = forwardRef<ViewportApi, { blocked: boolean; onImportMedi
           </div>
         )}
         {showGuides && <div className="guides" style={{ width: box.w, height: box.h, backgroundSize: `${box.w / 10}px ${box.h / 10}px` }} />}
+        {showSocialSafeArea && project.canvas.aspectRatio === "9:16" && <div className="social-safe-area" aria-hidden="true" style={{ width: box.w, height: box.h }}>
+          <div />
+        </div>}
         {b && !playing && (
           <div
             className="gizmo"
