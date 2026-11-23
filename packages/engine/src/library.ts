@@ -77,6 +77,14 @@ export class Library {
     return this.get(row.id)!;
   }
 
+  restore(row: ProjectRow) {
+    this.db.prepare(`INSERT INTO projects
+      (id, name, dir, aspect_ratio, created_at, updated_at, opened_at, pinned, favorite, thumbnail_path, duration_seconds)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(row.id, row.name, row.dir, row.aspectRatio, row.createdAt, row.updatedAt, row.openedAt,
+        Number(row.pinned), Number(row.favorite), row.thumbnailPath, row.durationSeconds);
+  }
+
   get(id: string): ProjectRow | undefined {
     const r = this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Raw | undefined;
     return r ? toRow(r) : undefined;

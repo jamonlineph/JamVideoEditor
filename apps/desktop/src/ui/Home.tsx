@@ -35,7 +35,9 @@ interface AutopilotJob {
 
 const sections = [
   { id: "projects", label: "Projects", icon: "projects" },
+  { id: "templates", label: "Templates", icon: "text" },
   { id: "inbox", label: "Inbox", icon: "inbox" },
+  { id: "trash", label: "Trash", icon: "delete" },
   { id: "settings", label: "Settings", icon: "settings" },
 ] as const;
 
@@ -84,6 +86,9 @@ export function Home({ onOpenProject, onOpenMcp }: { onOpenProject: () => void; 
   const openProjectId = appState?.openProjectId;
   const [projects, setProjects] = useState<ProjectRow[]>();
   const [projectsError, setProjectsError] = useState("");
+  const [trash, setTrash] = useState<{ entry: string; name: string; deletedAt: number }[]>([]);
+  const [trashBusy, setTrashBusy] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<{ id: string; name: string; builtin: boolean }[]>();
   const [section, setSection] = useState<Section>("projects");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<"updated" | "name">("updated");
@@ -124,6 +129,12 @@ export function Home({ onOpenProject, onOpenMcp }: { onOpenProject: () => void; 
         }),
         live.call<{ shortcutMap: ShortcutMapId }>("getSettings").then((result) => { if (!stopped) setShortcutMap(result.shortcutMap); }),
       ];
+      if (section === "trash") tasks.push(live.call<{ projects: typeof trash }>("projectTrash").then(({ projects }) => {
+        if (!stopped) setTrash(projects);
+      }));
+      if (section === "templates") tasks.push(live.call<{ templates: NonNullable<typeof templates> }>("projectTemplates").then((result) => {
+        if (!stopped) setTemplates(result.templates);
+      }));
       await Promise.allSettled(tasks);
       if (!stopped) timer = setTimeout(refresh, 5000);
     };
@@ -132,7 +143,7 @@ export function Home({ onOpenProject, onOpenMcp }: { onOpenProject: () => void; 
       stopped = true;
       clearTimeout(timer);
     };
-  }, [connected, refreshKey, openProjectId]);
+  }, [connected, refreshKey, openProjectId, section]);
 
   const refresh = () => setRefreshKey((key) => key + 1);
   const toggleSelection = (id: string) => setSelected((current) =>
@@ -167,11 +178,10 @@ export function Home({ onOpenProject, onOpenMcp }: { onOpenProject: () => void; 
       <header className="titlebar home-titlebar">
         <span className="brand"><Logo />OpenEdits Studio</span>
         <div className="spacer" />
-        <span className="connection-status" role="status">
+        {!connected && <span className="connection-status" role="status">
           <i className={`status-dot ${connected ? "" : "off"}`} />
           <span>{connected ? "Engine online" : "Reconnecting"}</span>
-        </span>
-        <button className="home-mcp" aria-haspopup="dialog" onClick={onOpenMcp}><EditorIcon name="plug" />MCP settings</button>
+        </span>}
       </header>
       <div className="home">
         <nav className="home-nav" aria-label="Home">
@@ -187,8 +197,16 @@ export function Home({ onOpenProject, onOpenMcp }: { onOpenProject: () => void; 
             <header className="home-heading">
               <div><h1>Projects</h1><p>Find a past edit or start a new one.</p></div>
               <div className="home-actions">
-                <button onClick={() => setCreateMode("files")} disabled={!connected || opening}><EditorIcon name="import" />Start from files</button>
-                <button className="primary" onClick={() => setCreateMode("empty")} disabled={!connected || opening}><EditorIcon name="plus" />New project</button>
+                <button className={!recent ? "primary" : ""} onClick={() => setCreateMode("files")} disabled={!connected || opening}><EditorIcon name="import" />Start from files</button>
+                <button onClick={() => setCreateMode("empty")} disabled={!connected || opening}><EditorIcon name="plus" />New project</button>
+                {!WEB && <button disabled={!connected || opening} onClick={async () => {
+                  setOpening(true);
+                  try {
+                    const [file] = await ipcRenderer.invoke("pick-files", { title: "Open a project backup", extensions: ["json"], multi: false }) as string[];
+                    if (file) await live.run("openProjectBackup", { path: file });
+                  } catch (error) { live.toast("error", (error as Error).message); }
+                  finally { setOpening(false); }
+                }}>Open backup…</button>}
               </div>
             </header>
             {recent && <div className="resume-project">
@@ -286,6 +304,36 @@ export function Home({ onOpenProject, onOpenMcp }: { onOpenProject: () => void; 
               </div>)}
               {!jobs.length && !waiting.length && <p className="muted">No jobs yet.</p>}
             </section>}
+          </>}
+          {section === "templates" && <>
+            <header className="home-heading"><div><h1>Templates</h1><p>Start with a layout and add your footage.</p></div></header>
+            <section className="home-settings-card">
+              {!templates && <p className="muted" role="status">Loading templates…</p>}
+              {templates?.map((template) => <div className="list-row" key={template.id}>
+                <div className="grow"><strong>{template.name}</strong><div className="muted small">{template.builtin ? "Starter layout" : "Saved layout"}</div></div>
+                <button disabled={!connected || opening} onClick={async () => {
+                  setOpening(true);
+                  try { await live.run("newProjectFromTemplate", { templateId: template.id }); }
+                  finally { setOpening(false); }
+                }}>Use template</button>
+              </div>)}
+            </section>
+          </>}
+          {section === "trash" && <>
+            <header className="home-heading"><div><h1>Trash</h1><p>Restore deleted projects to your library.</p></div></header>
+            <section className="home-settings-card">
+              {!trash.length && <p className="muted">No projects in Trash.</p>}
+              {trash.map((project) => <div className="list-row" key={project.entry}>
+                <span className="grow">{project.name}</span>
+                <span className="muted small">{new Date(project.deletedAt).toLocaleDateString()}</span>
+                <button disabled={!connected || trashBusy !== null} onClick={async () => {
+                  setTrashBusy(project.entry);
+                  try {
+                    if (await live.run("restoreProject", { entry: project.entry })) refresh();
+                  } finally { setTrashBusy(null); }
+                }}>{trashBusy === project.entry ? "Restoring…" : "Restore"}</button>
+              </div>)}
+            </section>
           </>}
           {section === "settings" && <>
             <header className="home-heading"><div><h1>Settings</h1><p>Manage connections and keyboard shortcuts.</p></div></header>
@@ -426,7 +474,10 @@ function CreateProjectDialog({ mode, aspect, setAspect, onClose }: {
       const options = { ...(name ? { name } : {}), canvas: { aspectRatio: aspect } };
       if (fromFiles) {
         const files = await ipcRenderer.invoke("pick-files", { multi: true }) as string[];
-        if (files.length) await live.call("create_project", { ...options, files });
+        if (files.length) {
+          const result = await live.call<{ warnings?: string[] }>("create_project", { ...options, files });
+          if (result.warnings?.length) live.toast("info", result.warnings[0]);
+        }
       } else {
         await live.call("newProject", options);
       }

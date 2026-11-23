@@ -76,6 +76,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
     setDragState(d);
   };
   const [dropX, setDropX] = useState<number | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const rs = project.rippleSettings;
 
   const snapTargets = useMemo(() => {
@@ -271,11 +272,17 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
           <button className="icon ghost" aria-label="Undo" title="Undo" onClick={() => void live.run("undo")}><EditorIcon name="undo" /></button>
           <button className="icon ghost" aria-label="Redo" title="Redo" onClick={() => void live.run("redo")}><EditorIcon name="redo" /></button>
           <span className="sep" />
-          <button className={rs.magnetEnabled ? "on" : ""} aria-pressed={rs.magnetEnabled} title="Magnetic main track (no gaps)" onClick={() => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled })}>
-            Magnet
-          </button>
+          {selection.size === 1 && <>
+            <button title="Trim start to playhead" onClick={() => void live.run("trimStart", { elementId: [...selection][0], time: ui.get().playhead })}>Trim start</button>
+            <button title="Trim end to playhead" onClick={() => void live.run("trimEnd", { elementId: [...selection][0], time: ui.get().playhead })}>Trim end</button>
+          </>}
           <button className={rs.snappingEnabled ? "on" : ""} aria-pressed={rs.snappingEnabled} title="Snap to edges, playhead and beats" onClick={() => void live.run("setRippleTiers", { snappingEnabled: !rs.snappingEnabled })}>
             Snap
+          </button>
+          <button className="ghost" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>Ripple settings</button>
+          {advanced && <>
+          <button className={rs.magnetEnabled ? "on" : ""} aria-pressed={rs.magnetEnabled} title="Magnetic main track (no gaps)" onClick={() => void live.run("setRippleTiers", { magnetEnabled: !rs.magnetEnabled })}>
+            Magnet
           </button>
           <button className={rs.tier1RippleEnabled ? "on ripple" : "ripple"} aria-pressed={rs.tier1RippleEnabled} title="Overlays follow the main clip they sit on" onClick={() => void live.run("setRippleTiers", { tier1RippleEnabled: !rs.tier1RippleEnabled })}>
             Ripple linked
@@ -283,6 +290,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
           <button className={rs.tier2RippleEnabled ? "on ripple" : "ripple"} aria-pressed={rs.tier2RippleEnabled} title="Everything after an edit shifts with it" onClick={() => void live.run("setRippleTiers", { tier2RippleEnabled: !rs.tier2RippleEnabled })}>
             Ripple all
           </button>
+          </>}
         </div>
         <div className="timeline-zoom">
           <button className="icon ghost" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(pps / 1.5)}>
@@ -377,7 +385,7 @@ export function Timeline({ onSeek }: { onSeek: (t: number) => void }) {
                 {t.elementIds.map((id) => {
                   const el = project.elements[id];
                   if (!el || (!(drag && "id" in drag && drag.id === id) && !inRange(el.start, el.start + el.duration))) return null;
-                  return <Clip key={id} el={el} project={project} pps={pps} selected={selection.has(id)} drag={drag && "id" in drag && drag.id === id ? drag : null} onPointerDown={(e, kind) => {
+                  return <Clip key={id} el={el} project={project} pps={pps} selected={selection.has(id)} drag={drag && "id" in drag && drag.id === id ? drag : null} onSelect={(event) => select(id, additiveClick(event))} onPointerDown={(e, kind) => {
                     e.stopPropagation();
                     if (e.button !== 0 || dragRef.current) return;
                     if (t.locked) return select(id, additiveClick(e));
@@ -426,7 +434,7 @@ function TimelinePlayhead({ scroller, pps }: { scroller: RefObject<HTMLDivElemen
   return <div className="playhead" ref={marker} />;
 }
 
-function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element; project: Project; pps: number; selected: boolean; drag: Drag | null; onPointerDown: (e: React.PointerEvent, kind: "body" | "l" | "r") => void }) {
+function Clip({ el, project, pps, selected, drag, onSelect, onPointerDown }: { el: Element; project: Project; pps: number; selected: boolean; drag: Drag | null; onSelect: (e: React.KeyboardEvent) => void; onPointerDown: (e: React.PointerEvent, kind: "body" | "l" | "r") => void }) {
   let left = el.start * pps;
   let width = el.duration * pps;
   if (drag?.kind === "move" && drag.moved) left += drag.dx;
@@ -444,6 +452,16 @@ function Clip({ el, project, pps, selected, drag, onPointerDown }: { el: Element
     <div
       className={`clip clip-${el.type}${selected ? " selected" : ""}${hasWaveform ? " has-waveform" : ""}`}
       data-id={el.id}
+      role="button"
+      tabIndex={0}
+      aria-label={`${label ?? el.type} at ${formatTime(el.start, project.canvas.fps)}`}
+      aria-pressed={selected}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(event);
+        }
+      }}
       style={{ left, width: Math.max(2, width), background: COLORS[el.type], opacity: drag?.kind === "move" && drag.moved ? 0.8 : 1 }}
       onPointerDown={(e) => onPointerDown(e, "body")}
       onDoubleClick={() => seek(el.start)}

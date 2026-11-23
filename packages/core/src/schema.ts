@@ -622,6 +622,8 @@ export const ProjectSchema = z.object({
   rippleSettings: RippleSettingsSchema,
   teleprompter: TeleprompterSchema,
   exportSettings: ExportSettingsSchema,
+  /** Default style for captions generated in this project, when started from a template. */
+  preferredCaptionStyle: z.string().optional(),
   /** Creator brief / notes recorded by agents (OpenCut `brief` op). */
   brief: z.string(),
 });

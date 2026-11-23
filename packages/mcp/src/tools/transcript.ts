@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { EditError, formatTranscript, mainTrack, timelineWords, type TranscriptOp } from "@openedits/core";
-import type { JobInfo } from "@openedits/engine";
+import { captionSetup, type JobInfo } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
 import { expectedVersion, round } from "./common.js";
 
@@ -47,6 +47,34 @@ function transcriptSummary(ctx: ToolContext) {
 }
 
 export const transcriptTools = [
+  defineTool({
+    name: "captionSetup",
+    title: "Set up local captions",
+    category: "text",
+    description: "Check the local caption runtime and model. With download, install the verified base Whisper model if the runtime is available.",
+    input: z.object({ download: z.boolean().optional() }),
+    handler: (a, ctx) => captionSetup(ctx.host, a.download ?? false),
+  }),
+  defineTool({
+    name: "planRoughCut",
+    title: "Find suggested cuts",
+    category: "text",
+    description: "Find silences, fillers and retakes without changing the edit. Returns a versioned list for review.",
+    input: z.object({}),
+    handler: (_a, ctx) => ctx.host.transcripts.planRoughCut(),
+  }),
+  defineTool({
+    name: "applyRoughCut",
+    title: "Apply reviewed cuts",
+    category: "text",
+    description: "Apply selected timeline ranges from planRoughCut as one undo step.",
+    input: z.object({
+      projectId: z.string(),
+      version: z.number().int().min(0),
+      ranges: z.array(z.object({ start: z.number().min(0), end: z.number().min(0) }).refine((r) => r.end > r.start)).min(1).max(2000),
+    }),
+    handler: (a, ctx) => ctx.host.transcripts.applyRoughCut(a.projectId, a.version, a.ranges, ctx.source),
+  }),
   defineTool({
     name: "transcribeClip",
     title: "Transcribe",
@@ -138,8 +166,11 @@ export const transcriptTools = [
     description: "Caption the main track from its transcript (transcribing first if needed): segments of up to maxWords words, carrying the transcript word ids so they re-sync after transcript edits. Replaces previously generated captions; manual captions are kept.",
     input: z.object({ style: z.string().optional(), maxWords: z.number().int().min(1).max(12).optional(), y: z.number().min(0).max(1).optional(), expectedVersion }),
     handler: async (a, ctx) => {
+      const store = ctx.host.store;
       await ctx.host.transcripts.ensure(ctx.host.transcripts.missingForTimeline(), 300_000);
-      const res = await ctx.host.transcripts.edit([{ op: "captions", ...(a.style ? { style: a.style } : {}), ...(a.maxWords ? { maxWords: a.maxWords } : {}), ...(a.y !== undefined ? { y: a.y } : {}) }], ctx.source, { expectedVersion: a.expectedVersion, label: "Generate captions" });
+      if (!ctx.host.isOpen || ctx.host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed while generating captions.");
+      const style = a.style ?? ctx.host.project.preferredCaptionStyle;
+      const res = await ctx.host.transcripts.edit([{ op: "captions", ...(style ? { style } : {}), ...(a.maxWords ? { maxWords: a.maxWords } : {}), ...(a.y !== undefined ? { y: a.y } : {}) }], ctx.source, { expectedVersion: a.expectedVersion, label: "Generate captions" });
       return { ok: true, version: res.version, undoLabel: res.label, ...(res.result as Record<string, unknown>[])[0] };
     },
   }),

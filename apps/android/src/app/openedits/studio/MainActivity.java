@@ -302,7 +302,13 @@ public class MainActivity extends Activity implements Engine.Listener {
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             pick.addCategory(Intent.CATEGORY_OPENABLE);
             pick.setType("*/*");
-            pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"video/*", "audio/*", "image/*", "application/octet-stream"});
+            boolean subtitles = false;
+            for (String type : params.getAcceptTypes()) {
+                if (type != null && (type.contains("srt") || type.contains("subrip"))) subtitles = true;
+            }
+            pick.putExtra(Intent.EXTRA_MIME_TYPES, subtitles
+                ? new String[] {"application/x-subrip", "text/plain", "application/octet-stream"}
+                : new String[] {"video/*", "audio/*", "image/*", "application/octet-stream"});
             pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE);
             try {
                 startActivityForResult(pick, PICK_FILES);
@@ -455,6 +461,7 @@ public class MainActivity extends Activity implements Engine.Listener {
         }
         final String name = file.getName();
         final String type = mime != null && !mime.isEmpty() && !mime.equals("application/octet-stream") ? mime : guessType(name);
+        final boolean share = "1".equals(url.getQueryParameter("share"));
         Toast.makeText(this, "Saving " + name + "…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             Uri target = null;
@@ -495,7 +502,22 @@ public class MainActivity extends Activity implements Engine.Listener {
                 if (target != null) getContentResolver().delete(target, null, null);
             }
             final String text = problem == null ? "Saved " + name + " to " + where : "Could not save " + name + ": " + problem;
-            runOnUiThread(() -> Toast.makeText(MainActivity.this, text, Toast.LENGTH_LONG).show());
+            final Uri saved = problem == null ? target : null;
+            runOnUiThread(() -> {
+                Toast.makeText(MainActivity.this, text, Toast.LENGTH_LONG).show();
+                if (share && saved != null) {
+                    Intent send = new Intent(Intent.ACTION_SEND);
+                    send.setType(type);
+                    send.putExtra(Intent.EXTRA_STREAM, saved);
+                    send.setClipData(ClipData.newUri(getContentResolver(), name, saved));
+                    send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    try {
+                        startActivity(Intent.createChooser(send, "Share video"));
+                    } catch (ActivityNotFoundException ignored) {
+                        Toast.makeText(this, "No app available to share this file.", Toast.LENGTH_LONG).show();
+                    }
+                }
+            });
         }).start();
     }
 

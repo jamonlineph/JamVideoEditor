@@ -6,6 +6,7 @@ import type { JobInfo } from "../jobs.js";
 import { expandHome, ffmpegEncoders, ffmpegPath, runFfmpeg, videoEncoderArgs, writeWav } from "../ffmpeg.js";
 import { renderAudioMix } from "../audio/mix.js";
 import { RenderHostClient } from "./hostClient.js";
+import { requireExportMedia } from "./preflight.js";
 
 export interface RenderOutput {
   path: string;
@@ -195,6 +196,9 @@ export class RenderService {
     const fps = preset ? 30 : opts.fps ?? (preview ? Math.min(project.canvas.fps, 30) : settings.fps);
     const times = frameTimes(project, { startSeconds: opts.startSeconds, endSeconds: opts.endSeconds }, fps);
     if (!times.length) throw new EditError("INVALID_RANGE", "Nothing to render: the timeline (or the requested range) is empty");
+    const start = times[0];
+    const durationSeconds = times.length / fps;
+    if (!preview) requireExportMedia(project, start, start + durationSeconds);
     const size = renderSizeFor(project, preset ? FAST_PRESET_HEIGHT[preset] : opts.shortSide ?? (preview ? 540 : SHORT_SIDE[settings.resolution]));
     const codec = preview || preset ? "h264" : settings.codec;
     const container = codec === "prores" ? "mov" : preview || preset ? "mp4" : settings.container;
@@ -212,8 +216,6 @@ export class RenderService {
       }
     }
     const output = out;
-    const start = times[0];
-    const durationSeconds = times.length / fps;
     const audioDir = this.cacheDir("audio");
     const { ctx, warnings } = this.context(project, { hideCaptions: !preview && !settings.burnInCaptions });
 
@@ -266,6 +268,7 @@ export class RenderService {
           return render(video);
         });
         job.signal.throwIfAborted();
+        if (!preview) requireExportMedia(project, start, start + durationSeconds);
         const sizeBytes = fs.statSync(partial).size;
         const destination = !preview && !opts.outputPath ? uniquePath(path.dirname(output), safeName, container) : output;
         fs.renameSync(partial, destination);

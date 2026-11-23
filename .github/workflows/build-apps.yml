@@ -84,6 +84,15 @@ jobs:
           for target in ${{ matrix.tools }}; do
             node scripts/fetch-tools.mjs --platform "${target%%:*}" --arch "${target##*:}"
           done
+      - name: Build the on-device caption runtime
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu
+          fi
+          arches=()
+          for target in ${{ matrix.tools }}; do arches+=("${target##*:}"); done
+          node scripts/build-whisper.mjs "${arches[@]}"
       - name: Build installers
         shell: bash
         run: npm run dist -- ${{ matrix.dist }}
@@ -95,12 +104,15 @@ jobs:
           RES="${{ matrix.resources }}"
           EXE=""; [ "$RUNNER_OS" = "Windows" ] && EXE=".exe"
           "$RES/vendor/ffmpeg$EXE" -hide_banner -version | head -1
+          "$RES/vendor/whisper-cli$EXE" --help > /dev/null 2>&1
           OUT=$(OPENEDITS_WORKSPACE="$RUNNER_TEMP/ws" OPENEDITS_FFMPEG="$RES/vendor/ffmpeg$EXE" OPENEDITS_FFPROBE="$RES/vendor/ffprobe$EXE" \
+            OPENEDITS_WHISPER="$RES/vendor/whisper-cli$EXE" \
             "${{ matrix.app }}" "$RES/app/engine/cli.mjs" doctor)
           echo "$OUT"
           echo "$OUT" | grep -q "^ok   ffmpeg"
           echo "$OUT" | grep -q "^ok   ffprobe"
           echo "$OUT" | grep -q "^ok   H.264 encoder"
+          echo "$OUT" | grep -q "^ok   whisper-cli"
       - name: Launch the packaged desktop app, import and export
         shell: bash
         timeout-minutes: 5

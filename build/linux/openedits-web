@@ -15,6 +15,7 @@ fi
 # The FFmpeg bundled with the app, unless you point at your own.
 [ -z "$OPENEDITS_FFMPEG" ] && [ -x "$RES/vendor/ffmpeg" ] && export OPENEDITS_FFMPEG="$RES/vendor/ffmpeg"
 [ -z "$OPENEDITS_FFPROBE" ] && [ -x "$RES/vendor/ffprobe" ] && export OPENEDITS_FFPROBE="$RES/vendor/ffprobe"
+[ -z "$OPENEDITS_WHISPER" ] && [ -x "$RES/vendor/whisper-cli" ] && export OPENEDITS_WHISPER="$RES/vendor/whisper-cli"
 # The engine runs on the Node.js inside the app, and uses the app itself as its (never shown) compositor.
 export OPENEDITS_ELECTRON="$BIN"
 export ELECTRON_RUN_AS_NODE=1
