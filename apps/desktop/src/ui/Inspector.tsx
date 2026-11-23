@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ipcRenderer } from "electron";
 import {
   ADJUST_PRESETS,
@@ -673,7 +673,7 @@ function PanelBody({ id, el, project, playhead, onMain }: { id: string; el: Elem
       );
     case "textEdit":
       if (el.type !== "text") return null;
-      return <TextEdit key={el.id} text={el.text} onCommit={(text) => call("editText", { text })} />;
+      return <TextEdit key={el.id} elementId={el.id} text={el.text} onCommit={(text) => call("editText", { text })} />;
     case "textStyle":
       if (el.type !== "text" && el.type !== "caption") return null;
       return <TextStylePanel element={el} captionIds={el.type === "caption" ? Object.values(project.elements).filter((item) => item.type === "caption").map((item) => item.id) : []} />;
@@ -868,9 +868,18 @@ function KeyframesPanel({ el, playhead }: { el: Element; playhead: number }) {
   );
 }
 
-function TextEdit({ text, onCommit }: { text: string; onCommit: (t: string) => void }) {
+function TextEdit({ elementId, text, onCommit }: { elementId: string; text: string; onCommit: (t: string) => void }) {
   const [v, setV] = useState(text);
-  return <textarea rows={4} style={{ width: "100%" }} value={v} onChange={(e) => setV(e.target.value)} onBlur={() => v !== text && v.trim() && onCommit(v)} />;
+  const field = useRef<HTMLTextAreaElement>(null);
+  const focusId = useUi("focusTitleId");
+  useEffect(() => {
+    if (focusId === elementId) {
+      field.current?.focus();
+      field.current?.select();
+      ui.set({ focusTitleId: undefined });
+    }
+  }, [elementId, focusId]);
+  return <textarea aria-label="Title text" ref={field} rows={4} style={{ width: "100%" }} value={v} onChange={(e) => setV(e.target.value)} onBlur={() => v !== text && v.trim() && onCommit(v)} />;
 }
 
 function TtsPanel({ onSpeak }: { onSpeak: (voice: string, rate: number) => void }) {

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ipcRenderer } from "electron";
+import type { MediaIssue } from "@openedits/engine";
 import { compositionDuration, mainTrack, clipBoundaries } from "@openedits/core";
 import { FILE_MANAGER, live, selectedElements, useLive, WEB } from "./live.js";
 import { ui, useUi, type UiState } from "./uiStore.js";
-import { Dock, DOCK_LABEL, DOCK_RAIL, importFiles } from "./Dock.js";
+import { Dock, DOCK_LABEL, DOCK_RAIL, dockIcon, importFiles } from "./Dock.js";
 import { Viewport, type ViewportApi } from "./Viewport.js";
 import { Inspector } from "./Inspector.js";
 import { Timeline } from "./Timeline.js";
@@ -17,6 +19,7 @@ type SidePanel = "library" | "inspector";
 export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: () => void }) {
   const s = useLive();
   const showGuides = useUi("showGuides");
+  const showSocialSafeArea = useUi("showSocialSafeArea");
   const recordingTools = useUi("recorder");
   const exportOpen = useUi("exportOpen");
   const dockTab = useUi("dockTab");
@@ -29,8 +32,10 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
   const libraryOpen = compact ? compactPanel === "library" : widePanels.library;
   const inspectorOpen = compact ? compactPanel === "inspector" : widePanels.inspector;
   const [job, setJob] = useState<ExportJob | null>(null);
+  const [mediaCheck, setMediaCheck] = useState<MediaCheck | null>(null);
   const [exportPending, setExportPending] = useState(false);
   const [cacheOpen, setCacheOpen] = useState(false);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const libraryToggle = useRef<HTMLButtonElement>(null);
   const inspectorToggle = useRef<HTMLButtonElement>(null);
   const recorderBusy = useSyncExternalStore(recorder.subscribe, () => recorder.state.phase !== "idle");
@@ -60,13 +65,48 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
     void importFiles().catch((error: Error) => live.toast("error", error.message));
   }
 
+  const refreshMedia = useCallback(async () => {
+    const before = live.state;
+    try {
+      const result = await live.call<MediaCheck>("checkExportMedia");
+      if (live.state.project?.id === before.project?.id && live.state.version === before.version) setMediaCheck(result);
+      return result;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (s.connected) void refreshMedia();
+    const refresh = () => void refreshMedia();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [s.connected, s.version, exportOpen, refreshMedia]);
+
   const runExport = async (tool: "export" | "cancelRender", args: Record<string, unknown>) => {
     setExportPending(true);
     try {
       const result = await live.run<ExportJob>(tool, args);
       if (result) setJob(result);
+      else if (tool === "export") await refreshMedia();
     } finally {
       setExportPending(false);
+    }
+  };
+
+  const locateMedia = async (media: MediaIssue) => {
+    const { version } = live.state;
+    try {
+      const extension = /\.([\w]+)$/.exec(media.name)?.[1];
+      const files = await ipcRenderer.invoke("pick-files", {
+        title: `Locate ${media.name}`, multi: false, ...(extension ? { extensions: [extension.toLowerCase()] } : {}),
+      }) as string[];
+      if (files[0]) {
+        const result = await live.run("relinkMedia", { mediaId: media.mediaId, projectId: project.id, path: files[0], expectedVersion: version });
+        if (result) await refreshMedia();
+      }
+    } catch (error) {
+      live.toast("error", (error as Error).message);
     }
   };
 
@@ -206,7 +246,7 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
 
   return (
     <>
-      <div className="editor-shell">
+      <div className={mediaCheck?.missing.length ? "editor-shell has-media-notice" : "editor-shell"}>
         <header className="titlebar editor-titlebar">
           <button className="ghost back-projects" disabled={recorderBusy} onClick={() => {
             viewport.current?.player?.pause();
@@ -219,16 +259,15 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
             <span className="project-format muted small">{project.canvas.resolution} · {project.canvas.fps} fps</span>
           </div>
           <div className="spacer" />
-          <span className="connection-status" role="status" title={s.lastChange?.label}>
+          {(!s.connected || agentActive) && <span className="connection-status" role="status" title={s.lastChange?.label}>
             <i className={`status-dot ${s.connected ? "" : "off"}`} />
             <span>{!s.connected ? "Reconnecting" : agentActive ? `${s.lastChange!.source.replace(/^mcp:/, "")} is editing` : "Connected"}</span>
-          </span>
+          </span>}
           <div className="editor-header-actions">
             <div className="editor-layout-actions">
               <button ref={libraryToggle} className={libraryOpen ? "on" : "ghost"} title="Library" aria-label="Library" aria-pressed={libraryOpen} aria-controls="editor-library" onClick={() => showPanel("library", !libraryOpen)}><EditorIcon name="library" /><span>Library</span></button>
               <button ref={inspectorToggle} className={inspectorOpen ? "on" : "ghost"} title="Inspector" aria-label="Inspector" aria-pressed={inspectorOpen} aria-controls="editor-inspector" onClick={() => showPanel("inspector", !inspectorOpen)}><EditorIcon name="inspector" /><span>Inspector</span></button>
             </div>
-            <button className="ghost editor-mcp" aria-haspopup="dialog" aria-label="MCP settings" title="MCP settings" onClick={onOpenMcp}><EditorIcon name="plug" /><span>MCP</span></button>
             <details className="editor-more" onBlur={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
             }} onKeyDown={(e) => {
@@ -245,6 +284,18 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
                   </select>
                 </label>
                 <button aria-pressed={showGuides} onClick={() => ui.set({ showGuides: !showGuides })}>Grid guides</button>
+                {project.canvas.aspectRatio === "9:16" && <button aria-pressed={Boolean(showSocialSafeArea)} onClick={() => ui.set({ showSocialSafeArea: !showSocialSafeArea })}>Social safe area</button>}
+                <button aria-haspopup="dialog" onClick={(e) => { e.currentTarget.closest("details")!.open = false; onOpenMcp(); }}>MCP settings</button>
+                {!WEB && <button onClick={async (event) => {
+                  event.currentTarget.closest("details")!.open = false;
+                  try {
+                    const destination = await ipcRenderer.invoke("pick-directory") as string | undefined;
+                    if (!destination) return;
+                    const result = await live.run<{ path: string }>("backupProject", { destination, projectId: project.id });
+                    if (result) await ipcRenderer.invoke("reveal", result.path);
+                  } catch (error) { live.toast("error", (error as Error).message); }
+                }}>Back up project with media…</button>}
+                <button aria-haspopup="dialog" onClick={(event) => { event.currentTarget.closest("details")!.open = false; setSaveTemplateOpen(true); }}>Save as template…</button>
                 <button aria-pressed={Boolean(s.appState?.teleprompterOpen)} onClick={(e) => {
                   e.currentTarget.closest("details")!.open = false;
                   setCompactPanel(null);
@@ -266,7 +317,7 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
           <nav className="tool-rail" aria-label="Media and effects">
             {DOCK_RAIL.map((tool) => {
               const active = libraryOpen && (dockTab === tool || (tool === "filters" && dockTab === "luts"));
-              return <button key={tool} className={active ? "selected-tool" : "ghost"} title={DOCK_LABEL[tool]} aria-label={DOCK_LABEL[tool]} aria-pressed={active} aria-controls="editor-library" onClick={() => openTool(tool, true)}><EditorIcon name={tool} /><span>{DOCK_LABEL[tool]}</span></button>;
+              return <button key={tool} className={active ? "selected-tool" : "ghost"} title={DOCK_LABEL[tool]} aria-label={DOCK_LABEL[tool]} aria-pressed={active} aria-controls="editor-library" onClick={() => openTool(tool, true)}><EditorIcon name={dockIcon(tool)} /><span>{DOCK_LABEL[tool]}</span></button>;
             })}
             <button className={recordingTools ? "selected-tool" : "ghost"} title="Voiceover" aria-label="Voiceover" aria-pressed={recordingTools} onClick={() => {
               setCompactPanel(null);
@@ -275,9 +326,24 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
           </nav>
           <ToolSearch onOpen={openTool} />
         </div>
+        {!!mediaCheck?.missing.length && (
+          <div className="media-notice" role="status">
+            <span>{mediaCheck.missing.length === 1 ? "1 source file is missing." : `${mediaCheck.missing.length} source files are missing.`}</span>
+            <button onClick={() => ui.set({ exportOpen: true })}>Locate media</button>
+          </div>
+        )}
         <div className={`editor${libraryOpen ? " with-library" : ""}${inspectorOpen ? " with-inspector" : ""}`}>
           <aside id="editor-library" className="editor-library" aria-label="Library" hidden={!libraryOpen}>
-            {libraryOpen && <Dock onClose={() => { showPanel("library", false); libraryToggle.current?.focus(); }} />}
+            {libraryOpen && <Dock audition={(start, end) => {
+              const player = viewport.current?.player;
+              player?.seek(start);
+              void player?.play(end);
+            }} onClose={() => { showPanel("library", false); libraryToggle.current?.focus(); }} onEditTitle={async (elementId) => {
+              if (await live.run("setSelection", { elementIds: [elementId] })) {
+                ui.set({ panel: "textEdit", focusTitleId: elementId });
+                showPanel("inspector", true);
+              }
+            }} />}
           </aside>
           <Viewport ref={viewport} blocked={compact && compactPanel !== null} onOpenEditingCache={() => setCacheOpen(true)} onImportMedia={importMedia} />
           <aside id="editor-inspector" className="editor-inspector" aria-label="Inspector" hidden={!inspectorOpen}>
@@ -291,10 +357,39 @@ export function Editor({ onHome, onOpenMcp }: { onHome: () => void; onOpenMcp: (
           <Timeline onSeek={seek} />
         </div>
       </div>
-      {exportOpen && <ExportDialog job={job} pending={exportPending} runJob={runExport} onClose={() => ui.set({ exportOpen: false })} />}
+      {exportOpen && <ExportDialog job={job} pending={exportPending} runJob={runExport} check={mediaCheck} locateMedia={locateMedia} refreshMedia={refreshMedia} onClose={() => ui.set({ exportOpen: false })} />}
       <EditingCacheDialog open={cacheOpen} onClose={() => setCacheOpen(false)} />
+      {saveTemplateOpen && <SaveTemplateDialog name={project.name} onClose={() => setSaveTemplateOpen(false)} />}
     </>
   );
+}
+
+function SaveTemplateDialog({ name, onClose }: { name: string; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  return <dialog className="dialog export-dialog" ref={dialog} aria-labelledby="template-title" onClose={onClose}>
+    <h3 id="template-title">Save as template</h3>
+    <p className="muted small">Reuse titles, image overlays, music, caption style, and export settings. Add new footage in each project.</p>
+    <form onSubmit={async (event) => {
+      event.preventDefault();
+      const label = String(new FormData(event.currentTarget).get("name") ?? "").trim();
+      if (!label) return;
+      setBusy(true);
+      try {
+        if (await live.run("saveProjectTemplate", { name: label })) {
+          live.toast("info", "Template saved to Home.");
+          dialog.current?.close();
+        }
+      } finally { setBusy(false); }
+    }}>
+      <label className="field wide"><span>Template name</span><input name="name" defaultValue={name.slice(0, 80)} maxLength={80} required autoFocus /></label>
+      <div className="row export-actions">
+        <button type="button" onClick={() => dialog.current?.close()}>Cancel</button>
+        <button className="primary" disabled={busy}>Save template</button>
+      </div>
+    </form>
+  </dialog>;
 }
 
 function ToolSearch({ onOpen }: { onOpen: (tab: UiState["dockTab"]) => void }) {
@@ -326,24 +421,29 @@ function ToolSearch({ onOpen }: { onOpen: (tab: UiState["dockTab"]) => void }) {
         }}
       />
       <div id="editor-tool-results" className="editor-menu" hidden={!open}>
-        {available.map((tool) => <button key={tool} onClick={() => pick(tool)}><EditorIcon name={tool === "luts" ? "filters" : tool} /> {DOCK_LABEL[tool]}</button>)}
+        {available.map((tool) => <button key={tool} onClick={() => pick(tool)}><EditorIcon name={dockIcon(tool)} /> {DOCK_LABEL[tool]}</button>)}
         {!available.length && <div className="muted small">No tools found</div>}
       </div>
     </div>
   );
 }
 
-type ExportJob = { jobId: string; status: string; progress: number; message?: string; output?: { path: string }; error?: { message: string } };
+type ExportJob = { jobId: string; status: string; progress: number; message?: string; output?: { path: string; warnings?: string[] }; error?: { message: string } };
+type MediaCheck = { missing: MediaIssue[]; hdr: MediaIssue[] };
 
-function ExportDialog({ job, pending, runJob, onClose }: {
+function ExportDialog({ job, pending, runJob, check, locateMedia, refreshMedia, onClose }: {
   job: ExportJob | null;
   pending: boolean;
   runJob: (tool: "export" | "cancelRender", args: Record<string, unknown>) => Promise<void>;
+  check: MediaCheck | null;
+  locateMedia: (media: MediaIssue) => Promise<void>;
+  refreshMedia: () => Promise<MediaCheck | null>;
   onClose: () => void;
 }) {
   const s = useLive();
   const settings = s.project!.exportSettings;
   const [preset, setPreset] = useState<"custom" | "fast-720p" | "fast-1080p">("custom");
+  const [locating, setLocating] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const working = job?.status === "queued" || job?.status === "running";
   useEffect(() => {
@@ -359,7 +459,7 @@ function ExportDialog({ job, pending, runJob, onClose }: {
           <select value={preset} onChange={(e) => setPreset(e.target.value as typeof preset)}>
             <option value="custom">Project settings</option>
             <option value="fast-720p">Fast Export · 720p</option>
-            <option value="fast-1080p">Fast Export · 1080p</option>
+            <option value="fast-1080p">{s.project?.canvas.aspectRatio === "9:16" ? "Social · 1080p vertical MP4" : "Fast Export · 1080p"}</option>
           </select>
         </label>
         {preset === "custom" ? <>
@@ -403,6 +503,21 @@ function ExportDialog({ job, pending, runJob, onClose }: {
           </label>
         </div>
       </fieldset>
+      {!!check?.missing.length && <div className="export-missing" aria-label="Missing media">
+        <p role="status">Locate these files to export the complete video.</p>
+        <ul>
+          {check.missing.map((media) => (
+            <li key={media.mediaId}><span title={media.path}>{media.name}</span>
+              <button disabled={working || pending || locating || !media.path} aria-label={`Locate ${media.name}`} onClick={async () => {
+                setLocating(true);
+                try { await locateMedia(media); } finally { setLocating(false); }
+              }}>Locate…</button>
+            </li>
+          ))}
+        </ul>
+        <button disabled={locating || pending} onClick={() => void refreshMedia()}>Check again</button>
+      </div>}
+      {!!check?.hdr.length && <p className="muted small">HDR footage in this edit will export as SDR without tone mapping. Colors may look different.</p>}
       {job && (
         <div className="export-status">
           {working && <progress aria-label="Export progress" max={1} value={job.progress} />}
@@ -411,11 +526,16 @@ function ExportDialog({ job, pending, runJob, onClose }: {
           </span>
         </div>
       )}
+      {!!job?.output?.warnings?.length && <details className="export-status">
+        <summary>{job.output.warnings.length} export {job.output.warnings.length === 1 ? "warning" : "warnings"}</summary>
+        <ul>{job.output.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+      </details>}
       <div className="row export-actions">
         <button onClick={() => dialog.current?.close()}>{working ? "Hide" : "Close"}</button>
         {working && <button className="danger" disabled={pending} onClick={() => void runJob("cancelRender", { jobId: job.jobId })}>Cancel export</button>}
-        {!working && <button className={job?.status === "done" ? "" : "primary"} disabled={pending} onClick={() => void runJob("export", preset === "custom" ? {} : { preset })}>Export</button>}
+        {!working && <button className={job?.status === "done" ? "" : "primary"} disabled={pending || locating || !!check?.missing.length} onClick={() => void runJob("export", preset === "custom" ? {} : { preset })}>Export</button>}
         {job?.status === "done" && job.output && <button className="primary" onClick={() => void import("electron").then(({ ipcRenderer }) => ipcRenderer.invoke("reveal", job.output!.path)).catch((error: Error) => live.toast("error", error.message))}>{WEB ? "Download" : `Show in ${FILE_MANAGER}`}</button>}
+        {job?.status === "done" && job.output && WEB && window.__openedits?.android && <button onClick={() => void ipcRenderer.invoke("share-export", job.output!.path).catch((error: Error) => live.toast("error", error.message))}>Save and share</button>}
       </div>
     </dialog>
   );

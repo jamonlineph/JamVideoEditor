@@ -2,8 +2,7 @@
 <!-- OpenEdits Studio for Android and Googlebooks: the whole editor in one app. The engine (Node.js,
      FFmpeg) runs on the device and serves the editor's page to the app's WebViews over loopback. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.openedits.studio">
-    <!-- Loopback sockets between the WebViews and the engine need it; nothing is sent elsewhere
-         unless you turn on the optional Claude features. -->
+    <!-- Loopback sockets between the WebViews and the engine, optional model downloads and AI. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Voiceover recording. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

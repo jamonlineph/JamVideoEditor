@@ -9,6 +9,7 @@ import { audioTools, exportTools } from "./tools/audio.js";
 import { analysisTools } from "./tools/analysis.js";
 import { renderTools } from "./tools/render.js";
 import { transcriptTools } from "./tools/transcript.js";
+import { subtitleTools } from "./tools/subtitles.js";
 import { visionTools } from "./tools/vision.js";
 import { uiTools, voiceoverTools } from "./tools/ui.js";
 import { editingCacheTools } from "./tools/editingCache.js";
@@ -20,7 +21,7 @@ export const VERSION = "0.1.0";
 export function allTools(): ToolDef[] {
   return [
     ...discoveryTools, ...projectTools, ...timelineTools, ...transformTools, ...colorTools, ...textTools, ...transcriptTools, ...visionTools, ...audioTools, ...analysisTools, ...exportTools, ...renderTools, ...uiTools, ...voiceoverTools,
-    ...thumbnailTools,
+    ...thumbnailTools, ...subtitleTools,
     ...editingCacheTools,
   ] as unknown as ToolDef[];
 }

@@ -1,4 +1,4 @@
-import type { CaptionElement, Element, TextStyle } from "../schema.js";
+import type { CaptionElement, Element, Project, TextStyle } from "../schema.js";
 import { EditError } from "../errors.js";
 import { EPS, cleanTime } from "../units.js";
 import type { EditContext } from "../ops/context.js";
@@ -251,6 +251,68 @@ function buildCaptions(ctx: EditContext, words: TimelineWord[], style: string, m
   return created.length;
 }
 
+function transcriptSilences(words: TimelineWord[], spans: Span[], min: number, pad: number): Range[] {
+  const ranges: Range[] = [];
+  for (const span of spans) {
+    const inSpan = words.filter((w) => w.elementId === span.elementId);
+    if (!inSpan.length) {
+      if (span.end - span.start >= min) ranges.push({ start: span.start, end: span.end });
+      continue;
+    }
+    if (inSpan[0].start - span.start >= min) ranges.push({ start: span.start, end: inSpan[0].start - pad });
+    for (let k = 0; k < inSpan.length - 1; k++) {
+      const gap = inSpan[k + 1].start - inSpan[k].end;
+      if (gap >= min) ranges.push({ start: inSpan[k].end + pad, end: inSpan[k + 1].start - pad });
+    }
+    const last = inSpan[inSpan.length - 1];
+    if (span.end - last.end >= min) ranges.push({ start: last.end + pad, end: span.end });
+  }
+  return mergeRanges(ranges);
+}
+
+export function suggestTranscriptCuts(project: Project, transcripts: TranscriptIndex, opts: TranscriptEditOptions) {
+  const { words } = timelineWords(project, transcripts);
+  const spans = transcribedSpans(project, transcripts);
+  const pad = opts.cutPaddingSeconds;
+  const fillers = runs(words.flatMap((w, i) => w.isFiller || isFillerWord(w.text) ? [i] : []));
+  const retakes = findRetakes(words).map((take): [number, number] => [take.from, take.to]);
+  const wordCuts = (ranges: [number, number][], reason: string) => ranges.flatMap(([i, j]) =>
+    clipToSpans(wordRunRange(words, i, j, spans, pad), spans).map((range) => ({
+      ...range, reasons: [reason], text: words.slice(i, j + 1).map((word) => word.text).join(" "),
+    })));
+  return [
+    ...transcriptSilences(words, spans, opts.minSilenceSeconds, pad).map((range) => ({ ...range, reasons: ["Silence"], text: "" })),
+    ...wordCuts(fillers, "Filler"),
+    ...wordCuts(retakes, "Retake"),
+  ];
+}
+
+export function applyReviewedCuts(ctx: EditContext, ranges: Range[], transcripts: TranscriptIndex) {
+  const previous = generatedCaptions(ctx);
+  const corrections = new Map(previous.flatMap((caption) => caption.words.flatMap((word) =>
+    typeof word.id === "number" ? [[word.id, word.text] as const] : [])));
+  const snap = snapshotMain(ctx.draft);
+  const removedSeconds = removeMainRanges(ctx, ranges, "inward");
+  finalize(ctx, snap);
+  if (removedSeconds > 0 && previous.length) {
+    const caption = previous[0];
+    const words = timelineWords(ctx.draft, transcripts).words.map((word) => ({
+      ...word, text: corrections.get(word.id) ?? word.text,
+    }));
+    if (findCatalogItem("captionStyles", caption.styleId) && words.length) {
+      const before = snapshotMain(ctx.draft);
+      buildCaptions(ctx, words, caption.styleId, undefined, caption.transform.y);
+      const existingIds = new Set(previous.map((item) => item.id));
+      for (const result of generatedCaptions(ctx)) if (!existingIds.has(result.id)) {
+        result.styleOverrides = caption.styleOverrides;
+        result.highlightColor = caption.highlightColor;
+      }
+      finalize(ctx, before);
+    }
+  }
+  return removedSeconds;
+}
+
 /**
  * Apply OpenCut-style transcript ops in order. Callers must run this in a transaction with
  * `skipFinalize: true`: each op lays out the timeline before the next one reads the words.
@@ -279,22 +341,7 @@ export function applyTranscriptOps(ctx: EditContext, ops: TranscriptOp[], transc
     switch (op.op) {
       case "remove_silences": {
         const min = op.minSilenceSeconds ?? opts.minSilenceSeconds;
-        const ranges: Range[] = [];
-        for (const span of spans) {
-          const inSpan = words.filter((w) => w.elementId === span.elementId);
-          if (!inSpan.length) {
-            if (span.end - span.start >= min) ranges.push({ start: span.start, end: span.end });
-            continue;
-          }
-          if (inSpan[0].start - span.start >= min) ranges.push({ start: span.start, end: inSpan[0].start - pad });
-          for (let k = 0; k < inSpan.length - 1; k++) {
-            const gap = inSpan[k + 1].start - inSpan[k].end;
-            if (gap >= min) ranges.push({ start: inSpan[k].end + pad, end: inSpan[k + 1].start - pad });
-          }
-          const last = inSpan[inSpan.length - 1];
-          if (span.end - last.end >= min) ranges.push({ start: last.end + pad, end: span.end });
-        }
-        const merged = mergeRanges(ranges);
+        const merged = transcriptSilences(words, spans, min, pad);
         const removedSeconds = removeMainRanges(ctx, merged, "inward");
         if (removedSeconds > 0) removedAny = true;
         result = { op: op.op, removedSeconds, pauses: merged.length, ranges: merged.map((r) => ({ start: cleanTime(r.start), end: cleanTime(r.end) })) };

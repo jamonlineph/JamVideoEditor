@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { EditError, formatTranscript, mainTrack, timelineWords, type TranscriptOp } from "@openedits/core";
-import type { JobInfo } from "@openedits/engine";
+import { captionSetup, type JobInfo } from "@openedits/engine";
 import { defineTool, type ToolContext } from "../defineTool.js";
 import { expectedVersion, round } from "./common.js";
 
@@ -47,6 +47,34 @@ function transcriptSummary(ctx: ToolContext) {
 }
 
 export const transcriptTools = [
+  defineTool({
+    name: "captionSetup",
+    title: "Set up local captions",
+    category: "text",
+    description: "Check the local caption runtime and model. With download, install the verified base Whisper model if the runtime is available.",
+    input: z.object({ download: z.boolean().optional() }),
+    handler: (a, ctx) => captionSetup(ctx.host, a.download ?? false),
+  }),
+  defineTool({
+    name: "planRoughCut",
+    title: "Find suggested cuts",
+    category: "text",
+    description: "Find silences, fillers and retakes without changing the edit. Returns a versioned list for review.",
+    input: z.object({}),
+    handler: (_a, ctx) => ctx.host.transcripts.planRoughCut(),
+  }),
+  defineTool({
+    name: "applyRoughCut",
+    title: "Apply reviewed cuts",
+    category: "text",
+    description: "Apply selected timeline ranges from planRoughCut as one undo step.",
+    input: z.object({
+      projectId: z.string(),
+      version: z.number().int().min(0),
+      ranges: z.array(z.object({ start: z.number().min(0), end: z.number().min(0) }).refine((r) => r.end > r.start)).min(1).max(2000),
+    }),
+    handler: (a, ctx) => ctx.host.transcripts.applyRoughCut(a.projectId, a.version, a.ranges, ctx.source),
+  }),
   defineTool({
     name: "transcribeClip",
     title: "Transcribe",

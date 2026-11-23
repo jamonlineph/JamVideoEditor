@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { EditError, applyTranscriptOps, cleanTime, isFillerWord, mainTrack, removeMainRanges, type MediaTranscript, type OpResult, type TranscriptIndex, type TranscriptOp, type TranscriptWord } from "@openedits/core";
+import { EditError, applyReviewedCuts, applyTranscriptOps, cleanTime, isFillerWord, mainTrack, removeMainRanges, suggestTranscriptCuts, type MediaTranscript, type OpResult, type TranscriptIndex, type TranscriptOp, type TranscriptWord } from "@openedits/core";
 import { parseStyleGuide, type AutoEditPlan } from "./style.js";
 import { findRetakesWithAi } from "../ai/features.js";
 import { timelineWords } from "@openedits/core";
@@ -25,15 +25,15 @@ const WHISPER_MISSING =
 
 let whisperFound: { path: string; ok: boolean } | undefined;
 
-/** Whether the whisper.cpp CLI can be started (checked once per path). */
+/** Whether the whisper.cpp CLI can be started. Retry after a previously missing runtime is installed. */
 export async function whisperAvailable(): Promise<boolean> {
   const bin = whisperPath();
-  if (whisperFound?.path === bin) return whisperFound.ok;
+  if (whisperFound?.path === bin && whisperFound.ok) return true;
   let ok = true;
   try {
     await execFileAsync(bin, ["--help"], { windowsHide: true, timeout: 15_000 });
-  } catch (e) {
-    ok = (e as NodeJS.ErrnoException).code !== "ENOENT"; // a non-zero exit still means it is there
+  } catch {
+    ok = false;
   }
   whisperFound = { path: bin, ok };
   return ok;
@@ -348,16 +348,15 @@ export class TranscriptService {
     return { ops: out, notes };
   }
 
-  /**
-   * Silence removal from the audio itself, for when there is no transcript and whisper.cpp is not
-   * installed: pauses in each main-track clip's sound are cut (keeping padding next to speech).
-   */
-  async removeSilencesFromAudio(op: Extract<TranscriptOp, { op: "remove_silences" }>, source: string, opts: { expectedVersion?: number } = {}) {
-    const host = this.host;
-    if (opts.expectedVersion !== undefined && opts.expectedVersion !== host.session.version) {
-      throw new EditError("VERSION_CONFLICT", `Project changed (version ${host.session.version}, expected ${opts.expectedVersion}); re-read and retry`, { currentVersion: host.session.version });
+  private checkPlanVersion(projectId: string, version: number) {
+    if (!this.host.isOpen || this.host.projectId !== projectId || this.host.session.version !== version) {
+      throw new EditError("VERSION_CONFLICT", "The edit changed. Find the cuts again before applying them.");
     }
-    const project = host.project;
+  }
+
+  private async silenceRanges(project: import("@openedits/core").Project, op: Extract<TranscriptOp, { op: "remove_silences" }>) {
+    const host = this.host;
+    const version = host.session.version;
     const min = op.minSilenceSeconds ?? host.settings.minSilenceSeconds;
     const pad = op.paddingSeconds ?? host.settings.cutPaddingSeconds;
     const ranges: { start: number; end: number }[] = [];
@@ -370,6 +369,7 @@ export class TranscriptService {
         skipped.push(el.id);
         continue;
       }
+      this.checkPlanVersion(project.id, version);
       const loaded = await host.audio.load({ elementId: id }, 16000);
       const env = rmsEnvelope(loaded.pcm, loaded.sampleRate);
       const stats = levelStats(loaded.pcm, env);
@@ -385,6 +385,62 @@ export class TranscriptService {
         if (end - start >= 1 / project.canvas.fps) ranges.push({ start, end });
       }
     }
+    this.checkPlanVersion(project.id, version);
+    return { ranges, skipped };
+  }
+
+  async planRoughCut() {
+    const host = this.host;
+    const project = host.project;
+    const version = host.session.version;
+    const settings = host.settings;
+    const ready = await transcriptionAvailable(settings.whisperModelPath);
+    this.checkPlanVersion(project.id, version);
+    if (ready) await this.ensure(this.missingForTimeline(), 300_000);
+    this.checkPlanVersion(project.id, version);
+    const transcripts = this.all();
+    const useWords = this.missingForTimeline().length === 0 && Object.keys(transcripts).length > 0;
+    const candidates = useWords
+      ? suggestTranscriptCuts(project, transcripts, settings)
+      : (await this.silenceRanges(project, { op: "remove_silences" })).ranges.map((range) => ({ ...range, reasons: ["Silence"], text: "" }));
+    const fps = project.canvas.fps;
+    const suggestions: typeof candidates = [];
+    for (const candidate of candidates.sort((a, b) => a.start - b.start)) {
+      const start = Math.ceil(candidate.start * fps - 1e-6) / fps;
+      const end = Math.floor(candidate.end * fps + 1e-6) / fps;
+      if (end <= start) continue;
+      const last = suggestions.at(-1);
+      if (last && last.end >= start) {
+        last.end = Math.max(last.end, end);
+        last.reasons = [...new Set([...last.reasons, ...candidate.reasons])];
+        if (candidate.text && !last.text.includes(candidate.text)) last.text = [last.text, candidate.text].filter(Boolean).join(" / ");
+      } else suggestions.push({ ...candidate, start, end });
+    }
+    return { projectId: project.id, version, suggestions, useWords };
+  }
+
+  applyRoughCut(projectId: string, version: number, ranges: { start: number; end: number }[], source: string) {
+    this.checkPlanVersion(projectId, version);
+    const host = this.host;
+    const revision = host.saveRevision("Before rough cut", source);
+    const transcripts = this.all();
+    const result = host.mutate("Apply rough cut", source, (ctx) => applyReviewedCuts(ctx, ranges, transcripts), { expectedVersion: version, skipFinalize: true });
+    return { version: result.version, removedSeconds: result.result, revisionBefore: revision.number };
+  }
+
+  /**
+   * Silence removal from the audio itself, for when there is no transcript and whisper.cpp is not
+   * installed: pauses in each main-track clip's sound are cut (keeping padding next to speech).
+   */
+  async removeSilencesFromAudio(op: Extract<TranscriptOp, { op: "remove_silences" }>, source: string, opts: { expectedVersion?: number } = {}) {
+    const host = this.host;
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== host.session.version) {
+      throw new EditError("VERSION_CONFLICT", `Project changed (version ${host.session.version}, expected ${opts.expectedVersion}); re-read and retry`, { currentVersion: host.session.version });
+    }
+    const project = host.project;
+    const version = host.session.version;
+    const { ranges, skipped } = await this.silenceRanges(project, op);
+    this.checkPlanVersion(project.id, version);
     const notes = ["Silences were found from the audio (no transcript; install whisper.cpp for word-accurate cuts, fillers and retakes)"];
     if (skipped.length) notes.push(`Clips with speed ramps were left as they are: ${skipped.join(", ")}`);
     if (!ranges.length) {

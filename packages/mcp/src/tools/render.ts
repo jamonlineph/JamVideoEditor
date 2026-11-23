@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { EditError, compositionDuration } from "@openedits/core";
-import { expandHome, type JobInfo, type RenderOutput } from "@openedits/engine";
+import { checkExportMedia, expandHome, type JobInfo, type RenderOutput } from "@openedits/engine";
 import { IMAGES_KEY, defineTool, type ToolContext } from "../defineTool.js";
 import { round } from "./common.js";
 
@@ -72,6 +72,15 @@ function resolveMediaRef(ctx: ToolContext, ref: string): { mediaId?: string; pat
 }
 
 export const renderTools = [
+  defineTool({
+    name: "checkExportMedia",
+    title: "Check export media",
+    category: "export",
+    description: "List missing and HDR media used in the requested export interval.",
+    input: z.object({ from: z.number().min(0).optional(), to: z.number().min(0).optional() }),
+    readOnly: true,
+    handler: (a, ctx) => checkExportMedia(ctx.host.project, a.from, a.to),
+  }),
   defineTool({
     name: "captureFrame",
     title: "Capture frame",

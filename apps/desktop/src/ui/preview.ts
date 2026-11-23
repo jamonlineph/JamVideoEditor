@@ -191,7 +191,7 @@ export class Player {
     }, 350);
   }
 
-  async play() {
+  async play(until?: number) {
     const { project } = live.state;
     if (!project || ui.get().playing) return;
     let currentProject = project;
@@ -201,7 +201,7 @@ export class Player {
     clearTimeout(this.audioWarmTimer);
     const generation = ++this.generation;
     let t = ui.get().playhead;
-    if (t >= end - 0.05) t = 0;
+    if (until === undefined && t >= end - 0.05) t = 0;
     this.preview.startPlayback();
     ui.set({ playing: true, playhead: t });
     let lastFrame = Math.floor(t * project.canvas.fps + 1e-6);
@@ -229,6 +229,10 @@ export class Player {
         this.startWall = performance.now();
         this.audio.configure(next, end);
         time = this.audio.time(time);
+      }
+      if (until !== undefined && time >= Math.min(until, end)) {
+        this.pause(Math.min(until, Math.max(0, end - 1 / currentProject.canvas.fps)));
+        return;
       }
       if (time >= end) {
         if (end > 0 && ui.get().loop) {

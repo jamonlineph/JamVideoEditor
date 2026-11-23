@@ -34,7 +34,7 @@ Installers are built by the **Build apps** GitHub Actions workflow on every push
 - **Export progress** stays in the editor header if you hide the dialog. Reopen **Export** to cancel an active render or download a finished video.
 - **Voiceovers** use the device's microphone (the app asks the first time).
 - **Exports keep going in the background**: while the editor is open the app shows a quiet notification, which keeps Android from pausing it.
-- What is not in the app: transcripts and captions from speech (whisper.cpp and its model are not bundled) and the Apple Vision features (macOS only). The editor greys these out.
+- Automatic transcription and Apple Vision are unavailable on Android. The Captions panel supports manual captions and SRT import/export. **Save and share** opens Android's share sheet after saving an export.
 - Preview and export run on the device's processor and GPU. Long 4K exports take a while on a small device.
 
 <details><summary>How the Android app works</summary>
@@ -98,7 +98,7 @@ The editor runs on macOS, Windows and Linux. You need Node.js 22+ and FFmpeg on 
 | Text to speech | system voices | Windows voices | eSpeak NG (`sudo apt install espeak-ng`) |
 | Auto reframe, cutouts, tracking, subject effects | Apple Vision | not available | not available |
 
-The app greys out what this computer cannot do and says what to install. For transcripts, put `whisper-cli` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) on the `PATH` (or set `OPENEDITS_WHISPER` to its path) and download `ggml-large-v3-turbo-q5_0.bin` to the path `doctor` prints. Without a GPU (virtual machines, remote desktops) the preview and exports render in software, which is slower but looks the same.
+Desktop installers bundle the Whisper runtime. Open **Captions** and download the model once to caption offline. For a source checkout, put [`whisper-cli`](https://github.com/ggml-org/whisper.cpp) on the `PATH` or set `OPENEDITS_WHISPER` to its path. Without a GPU (virtual machines, remote desktops) preview and export render in software.
 
 ### Keep generated files out of iCloud
 
@@ -229,6 +229,9 @@ Each project lives at `<workspace>/projects/<id>/project.db`. The document autos
 
 ### Transcripts and word-ID editing (OpenCut-style)
 
+- **Rough cut** finds pauses, fillers and retakes. Play the suggestions, uncheck cuts you want to keep, then apply the rest as one undo step. When a transcript is unavailable, the panel can still find pauses from the audio.
+- **Recovering work.** Use **Locate media** when sources move. Final export blocks if required files are unavailable. Trash on Home can restore deleted projects. On desktop, the editor's project backup collects files alongside a snapshot of the edit. Keep that folder together and choose **Open backup** from Home to use it again.
+- **Reusable layouts.** Start with a template on Home, or save the current project's titles, image overlays, music, caption style and export settings as a local template.
 - `transcribeClip` runs whisper.cpp locally (reusing the model in `~/Movies/OpenCut/models`), in parallel chunks split at quiet points for long media. Every word gets a stable `#id` that never changes or gets reused, so edits stay valid after other cuts.
 - Word timing combines Whisper's DTW token alignment with the audio energy, so pauses are where the audio is actually silent.
 - `get_transcript` shows the words currently on the timeline with `[pause]` and `[cut]` markers and filler tags.
