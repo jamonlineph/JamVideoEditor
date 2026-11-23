@@ -166,8 +166,11 @@ export const transcriptTools = [
     description: "Caption the main track from its transcript (transcribing first if needed): segments of up to maxWords words, carrying the transcript word ids so they re-sync after transcript edits. Replaces previously generated captions; manual captions are kept.",
     input: z.object({ style: z.string().optional(), maxWords: z.number().int().min(1).max(12).optional(), y: z.number().min(0).max(1).optional(), expectedVersion }),
     handler: async (a, ctx) => {
+      const store = ctx.host.store;
       await ctx.host.transcripts.ensure(ctx.host.transcripts.missingForTimeline(), 300_000);
-      const res = await ctx.host.transcripts.edit([{ op: "captions", ...(a.style ? { style: a.style } : {}), ...(a.maxWords ? { maxWords: a.maxWords } : {}), ...(a.y !== undefined ? { y: a.y } : {}) }], ctx.source, { expectedVersion: a.expectedVersion, label: "Generate captions" });
+      if (!ctx.host.isOpen || ctx.host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed while generating captions.");
+      const style = a.style ?? ctx.host.project.preferredCaptionStyle;
+      const res = await ctx.host.transcripts.edit([{ op: "captions", ...(style ? { style } : {}), ...(a.maxWords ? { maxWords: a.maxWords } : {}), ...(a.y !== undefined ? { y: a.y } : {}) }], ctx.source, { expectedVersion: a.expectedVersion, label: "Generate captions" });
       return { ok: true, version: res.version, undoLabel: res.label, ...(res.result as Record<string, unknown>[])[0] };
     },
   }),

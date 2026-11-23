@@ -294,12 +294,12 @@ export function applyReviewedCuts(ctx: EditContext, ranges: Range[], transcripts
   const snap = snapshotMain(ctx.draft);
   const removedSeconds = removeMainRanges(ctx, ranges, "inward");
   finalize(ctx, snap);
-  if (removedSeconds > 0 && previous.length) {
+  if (removedSeconds > 0 && previous.length && Object.keys(transcripts).length) {
     const caption = previous[0];
     const words = timelineWords(ctx.draft, transcripts).words.map((word) => ({
       ...word, text: corrections.get(word.id) ?? word.text,
     }));
-    if (findCatalogItem("captionStyles", caption.styleId) && words.length) {
+    if (findCatalogItem("captionStyles", caption.styleId)) {
       const before = snapshotMain(ctx.draft);
       buildCaptions(ctx, words, caption.styleId, undefined, caption.transform.y);
       const existingIds = new Set(previous.map((item) => item.id));

@@ -207,8 +207,7 @@ export class TranscriptService {
     return [...ids];
   }
 
-  private async runWhisper(wav: string, outBase: string, fromSeconds: number, toSeconds: number, language: string, signal: AbortSignal) {
-    const model = this.host.settings.whisperModelPath;
+  private async runWhisper(wav: string, outBase: string, fromSeconds: number, toSeconds: number, language: string, model: string, signal: AbortSignal) {
     const args = ["-m", model, "-f", wav, "-l", language, "-ojf", "-ml", "1", "-sow", "-np", "--prompt", VERBATIM_PROMPT, "-of", outBase, "-ot", String(Math.round(fromSeconds * 1000)), "-d", String(Math.round((toSeconds - fromSeconds) * 1000))];
     // DTW token alignment (needs flash attention off) gives word times that line up with the audio.
     const dtw = dtwPreset(model);
@@ -228,22 +227,26 @@ export class TranscriptService {
   /** Transcribe one media file (parallel chunks for long audio) and store it with fresh word ids. */
   async transcribe(mediaId: string, job: JobContext, opts: { language?: string } = {}): Promise<MediaTranscript> {
     const host = this.host;
+    const store = host.store;
+    const projectId = host.projectId;
     const media = host.project.media[mediaId];
     if (!media) throw new EditError("MEDIA_NOT_FOUND", `No media with id "${mediaId}"`);
     if (!media.hasAudio) throw new EditError("UNSUPPORTED_MEDIA", `${media.name} has no audio to transcribe`);
     const model = host.settings.whisperModelPath;
     if (!(await whisperAvailable())) throw new EditError("NOT_IMPLEMENTED", WHISPER_MISSING);
+    if (!host.isOpen || host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed before transcription started.");
     if (!fs.existsSync(model)) {
       throw new EditError("FILE_NOT_FOUND", `Transcription needs a Whisper model and none was found at ${model}. Download ${path.basename(model)} (or another ggml model) from huggingface.co/ggerganov/whisper.cpp and put it there, or point whisperModelPath in settings.json at the model you have.`, { path: model });
     }
     const language = opts.language ?? host.settings.language ?? "auto";
-    const dir = path.join(host.projectDirPath, "cache", "transcripts");
-    fs.mkdirSync(dir, { recursive: true });
-    const wav = path.join(dir, `${mediaId}.wav`);
+    const cache = path.join(store.dir, "cache", "transcripts");
+    fs.mkdirSync(cache, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(cache, "speech-"));
+    const wav = path.join(dir, "clip.wav");
 
-    job.progress(0.02, `Decoding audio of ${media.name}`);
-    await runFfmpeg(["-y", "-v", "error", "-i", media.path, "-vn", "-ac", "1", "-ar", String(SAMPLE_RATE), "-c:a", "pcm_s16le", wav], { signal: job.signal });
     try {
+      job.progress(0.02, `Decoding audio of ${media.name}`);
+      await runFfmpeg(["-y", "-v", "error", "-i", media.path, "-vn", "-ac", "1", "-ar", String(SAMPLE_RATE), "-c:a", "pcm_s16le", wav], { signal: job.signal });
       const pcm = await decodePcm(wav, { sampleRate: SAMPLE_RATE, channels: 1 });
       const bounds = chunkBoundaries(pcm, SAMPLE_RATE);
       const chunks = bounds.slice(0, -1).map((from, i) => ({ from, to: bounds[i + 1], i }));
@@ -254,7 +257,7 @@ export class TranscriptService {
         Array.from({ length: Math.min(2, chunks.length) }, async () => {
           while (next < chunks.length) {
             const c = chunks[next++];
-            const r = await this.runWhisper(wav, path.join(dir, `${mediaId}-${c.i}`), c.from, c.to, language, job.signal);
+            const r = await this.runWhisper(wav, path.join(dir, String(c.i)), c.from, c.to, language, model, job.signal);
             // A word belongs to the chunk its start falls in (whisper may run past the chunk end).
             results[c.i] = { ...r, words: r.words.filter((w) => w.start >= c.from - 1e-3 && w.start < c.to) };
             job.progress(0.05 + 0.85 * (++done / chunks.length), `Transcribed ${done}/${chunks.length} chunk${chunks.length > 1 ? "s" : ""}`);
@@ -264,7 +267,10 @@ export class TranscriptService {
       const raw = results.flatMap((r) => r.words).sort((a, b) => a.start - b.start);
       const env = rmsEnvelope(pcm, SAMPLE_RATE);
       const refined = alignWords(raw, env, levelStats(pcm, env).silenceThresholdDb);
-      const firstId = host.store.allocateWordIds(refined.length);
+      if (!host.isOpen || host.store !== store || host.project.media[mediaId]?.path !== media.path) {
+        throw new EditError("VERSION_CONFLICT", "The project or source changed during transcription.");
+      }
+      const firstId = store.allocateWordIds(refined.length);
       const words: TranscriptWord[] = refined.map((w, i) => ({
         id: firstId + i,
         text: w.text,
@@ -281,18 +287,19 @@ export class TranscriptService {
         durationSourceSeconds: pcm.length / SAMPLE_RATE,
         words,
       };
-      host.store.saveTranscript(transcript);
+      store.saveTranscript(transcript);
       job.progress(1, `${words.length} words`);
-      host.emit("transcript", { projectId: host.projectId, mediaId, words: words.length });
+      host.emit("transcript", { projectId, mediaId, words: words.length });
       return transcript;
     } finally {
-      fs.rmSync(wav, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }
 
   /** Start transcribing several media files in one background job. */
   start(mediaIds: string[], opts: { language?: string; force?: boolean } = {}): JobInfo {
     const host = this.host;
+    const store = host.store;
     for (const id of mediaIds) if (!host.project.media[id]) throw new EditError("MEDIA_NOT_FOUND", `No media with id "${id}"`);
     const todo = opts.force ? mediaIds : mediaIds.filter((id) => !this.get(id));
     return host.jobs.start(
@@ -300,6 +307,7 @@ export class TranscriptService {
       async (job) => {
         const out: { mediaId: string; words: number; language: string }[] = [];
         for (const [k, id] of todo.entries()) {
+          if (!host.isOpen || host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed during transcription.");
           const sub: JobContext = { signal: job.signal, progress: (f, m) => job.progress((k + f) / todo.length, m) };
           const t = await this.transcribe(id, sub, opts);
           out.push({ mediaId: id, words: t.words.length, language: t.language });
@@ -423,7 +431,7 @@ export class TranscriptService {
     this.checkPlanVersion(projectId, version);
     const host = this.host;
     const revision = host.saveRevision("Before rough cut", source);
-    const transcripts = this.all();
+    const transcripts = this.missingForTimeline().length ? {} : this.all();
     const result = host.mutate("Apply rough cut", source, (ctx) => applyReviewedCuts(ctx, ranges, transcripts), { expectedVersion: version, skipFinalize: true });
     return { version: result.version, removedSeconds: result.result, revisionBefore: revision.number };
   }
@@ -457,14 +465,19 @@ export class TranscriptService {
   /** Run word-id ops as one undo step, saving a numbered revision first (so a whole pass can be reverted). */
   async edit(rawOps: TranscriptOp[], source: string, opts: { expectedVersion?: number; label?: string } = {}) {
     const host = this.host;
+    const store = host.store;
     const missing = this.missingForTimeline();
     if (missing.length) {
       // Silence removal works from the audio alone; everything else needs words, so transcribe first.
       const onlySilences = rawOps.every((o) => o.op === "remove_silences");
-      if (onlySilences && rawOps.length && !(await whisperAvailable())) return this.removeSilencesFromAudio(rawOps[0] as Extract<TranscriptOp, { op: "remove_silences" }>, source, opts);
+      const useAudio = onlySilences && rawOps.length && !(await transcriptionAvailable(host.settings.whisperModelPath));
+      if (!host.isOpen || host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed before editing the transcript.");
+      if (useAudio) return this.removeSilencesFromAudio(rawOps[0] as Extract<TranscriptOp, { op: "remove_silences" }>, source, opts);
       await this.ensure(missing, 30 * 60_000);
     }
+    if (!host.isOpen || host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed before editing the transcript.");
     const { ops, notes } = await this.prepareOps(rawOps);
+    if (!host.isOpen || host.store !== store) throw new EditError("VERSION_CONFLICT", "The open project changed while preparing edits.");
     const transcripts = this.all();
     if (!Object.keys(transcripts).length) throw new EditError("INVALID_ARGUMENT", "No transcripts yet: run transcribeClip (or auto_edit) first");
     if (opts.expectedVersion !== undefined && opts.expectedVersion !== host.session.version) {
